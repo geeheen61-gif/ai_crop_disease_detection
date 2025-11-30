@@ -4,7 +4,7 @@ requests==2.31.0
 Pillow==10.1.0
 python-dotenv==1.0.0
 google-generativeai==0.3.0
-numpy==1.26.4
-tensorflow==2.16.1
-keras==2.16.0
+numpy==1.23.5
+tensorflow-cpu==2.10.1
 scikit-learn==1.5.0
+gunicorn==21.2.0
