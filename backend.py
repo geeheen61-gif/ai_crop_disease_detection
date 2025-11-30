@@ -369,6 +369,14 @@ def default_gemini_key():
         return k
     return None
 
+def language_name(code):
+    c = str(code or "").lower()
+    if c == "ur":
+        return "Urdu"
+    if c == "en":
+        return "English"
+    return "English"
+
 def guidance_text(category, top3_classes, api_key):
     if genai is None or not api_key:
         return CATEGORY_GUIDE.get(category, "Consult a local agronomist for detailed guidance.")
@@ -556,6 +564,7 @@ def chat():
             model = genai.GenerativeModel('gemini-2.0-flash')
             
             preface = ""
+            reply_language = str(data.get("reply_language") or "").lower()
             category = data.get("category")
             if category:
                 preface += f"Predicted category: {category}. "
@@ -565,11 +574,36 @@ def chat():
                 classes_text = ", ".join([f"{c.get('name')} ({float(c.get('prob', 0))*100:.1f}%)" for c in top_classes])
                 preface += f"Top classes: {classes_text}. "
             
+            if reply_language in {"ur", "en"}:
+                preface = f"Respond in {language_name(reply_language)}. " + preface
             resp = model.generate_content(preface + message)
             txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
             return jsonify({"reply": txt or "No response"})
         except Exception:
             return jsonify({"reply": "AI service unavailable."})
+    except Exception:
+        return jsonify({"error": "internal_error"}), 500
+
+@app.post("/translate")
+def translate():
+    try:
+        data = request.get_json(silent=True) or {}
+        text = data.get("text")
+        target = str(data.get("target") or "ur").lower()
+        if not text:
+            return jsonify({"error": "no_text"}), 400
+        api_key = data.get("gemini_api_key") or default_gemini_key()
+        if genai is None or not api_key:
+            return jsonify({"translated": text}), 200
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-2.0-flash')
+            lang = "Urdu" if target == "ur" else "English"
+            resp = model.generate_content(f"Translate to {lang}. Only translation:\n\n{text}")
+            txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
+            return jsonify({"translated": txt or text})
+        except Exception:
+            return jsonify({"translated": text})
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
