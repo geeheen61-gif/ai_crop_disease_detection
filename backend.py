@@ -692,27 +692,32 @@ def sensors_pull():
 @app.get("/sensors/latest")
 def sensors_latest():
     try:
-        lr = latest_reading()
-        if lr:
-            return jsonify(lr)
-        
         esp32_url = get_config("esp32_url", "").strip() or os.getenv("ESP32_SENSOR_URL", "").strip()
+        
         if esp32_url:
             try:
                 reading = fetch_from_esp32(esp32_url)
                 if reading:
                     ts = int(time.time())
-                    conn = ensure_db()
-                    conn.execute(
-                        "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
-                        (ts, float(reading["temperature"]), float(reading["humidity"]), int(reading["soil"]), 1 if reading["rain"] else 0)
-                    )
-                    conn.commit()
                     return jsonify({"ts": ts, **reading})
             except Exception as e:
                 print(f"ESP32 fetch error: {e}")
         
-        return jsonify({"error": "no_data"}), 404
+        lr = latest_reading()
+        if lr:
+            return jsonify(lr)
+        
+        return jsonify({"error": "no_data", "message": "No ESP32 configured and no cached data"}), 404
+    except Exception:
+        return jsonify({"error": "internal_error"}), 500
+
+@app.get("/sensors/config")
+def sensors_config():
+    try:
+        return jsonify({
+            "esp32_url": get_config("esp32_url", ""),
+            "esp32_camera_url": get_config("esp32_camera_url", ""),
+        })
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
