@@ -5,6 +5,7 @@ import time
 import re
 import sqlite3
 import threading
+import base64
 from flask import Flask, jsonify, request, Response, send_from_directory
 from flask_cors import CORS
 import requests
@@ -674,7 +675,7 @@ def esp32_register():
 def sensors_pull():
     try:
         data = request.get_json(silent=True) or {}
-        base_url = str(data.get("base_url") or get_config("esp32_url", "")).strip()
+        base_url = str(data.get("base_url") or get_config("esp32_url", "") or os.getenv("ESP32_SENSOR_URL", "")).strip()
         if not base_url:
             return jsonify({"error": "no_base_url"}), 400
         reading = fetch_from_esp32(base_url)
@@ -692,9 +693,26 @@ def sensors_pull():
 def sensors_latest():
     try:
         lr = latest_reading()
-        if not lr:
-            return jsonify({"error": "no_data"}), 404
-        return jsonify(lr)
+        if lr:
+            return jsonify(lr)
+        
+        esp32_url = get_config("esp32_url", "").strip() or os.getenv("ESP32_SENSOR_URL", "").strip()
+        if esp32_url:
+            try:
+                reading = fetch_from_esp32(esp32_url)
+                if reading:
+                    ts = int(time.time())
+                    conn = ensure_db()
+                    conn.execute(
+                        "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
+                        (ts, float(reading["temperature"]), float(reading["humidity"]), int(reading["soil"]), 1 if reading["rain"] else 0)
+                    )
+                    conn.commit()
+                    return jsonify({"ts": ts, **reading})
+            except Exception as e:
+                print(f"ESP32 fetch error: {e}")
+        
+        return jsonify({"error": "no_data"}), 404
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
@@ -723,6 +741,18 @@ def sensors_push():
         conn.execute("INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)", (ts, t, h, s, r))
         conn.commit()
         return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"error": "internal_error"}), 500
+
+@app.post("/sensors/register")
+def sensors_register():
+    try:
+        data = request.get_json(silent=True) or {}
+        sensor_url = str(data.get("url") or "").strip()
+        if not sensor_url:
+            return jsonify({"error": "no_url"}), 400
+        set_config("esp32_url", sensor_url)
+        return jsonify({"ok": True, "sensor_url": sensor_url})
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
@@ -1177,14 +1207,32 @@ def camera_config():
 @app.route('/latest', methods=['GET'])
 def get_latest():
     try:
-        resources = cloudinary.api.resources(resource_type="image", max_results=1)
-        if resources.get('resources'):
-            latest = resources['resources'][0]['secure_url']
-            return jsonify({"image_url": latest, "source": "cloudinary"})
-        else:
-            return jsonify({"error": "No images found"}), 404
+        esp32_url = get_config("esp32_camera_url", "").strip() or os.getenv("ESP32_CAMERA_URL", "").strip()
+        
+        if esp32_url:
+            try:
+                resp = requests.get(esp32_url, timeout=5)
+                if resp.status_code == 200:
+                    b64_img = base64.b64encode(resp.content).decode('utf-8')
+                    return jsonify({
+                        "image_url": f"data:image/jpeg;base64,{b64_img}",
+                        "source": "esp32_camera"
+                    })
+            except Exception as e:
+                print(f"ESP32 camera error: {e}")
+        
+        if HAS_CLOUDINARY:
+            try:
+                resources = cloudinary.api.resources(resource_type="image", max_results=1)
+                if resources.get('resources'):
+                    latest = resources['resources'][0]['secure_url']
+                    return jsonify({"image_url": latest, "source": "cloudinary"})
+            except Exception as e:
+                print(f"Cloudinary API error: {e}")
+        
+        return jsonify({"error": "No image sources available"}), 404
     except Exception as e:
-        print(f"Cloudinary API error: {e}")
+        print(f"Error in get_latest: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
