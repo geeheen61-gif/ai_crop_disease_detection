@@ -641,7 +641,7 @@ def guidance_text(category, top3_classes, api_key, language="en"):
         return guide_map.get(category, default_msg)
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         classes_text = ", ".join([f"{n} ({p*100:.1f}%)" for n, p in top3_classes])
         lang_name = "Urdu" if language == "ur" else "English"
         prompt = (
