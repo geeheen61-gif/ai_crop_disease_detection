@@ -89,6 +89,9 @@ SERIAL_BAUD = int(os.getenv("ESP32_SERIAL_BAUD", "115200"))
 LATEST_SENSOR_READING = {}
 LATEST_SENSOR_READING_LOCK = threading.Lock()
 
+LATEST_IMAGE = None
+LATEST_IMAGE_LOCK = threading.Lock()
+
 def ensure_db():
     global DB
     if DB is None:
@@ -1229,7 +1232,15 @@ def camera_config():
 
 @app.route('/latest', methods=['GET'])
 def get_latest():
+    global LATEST_IMAGE
     try:
+        with LATEST_IMAGE_LOCK:
+            if LATEST_IMAGE:
+                return jsonify({
+                    "image_url": f"data:image/jpeg;base64,{LATEST_IMAGE}",
+                    "source": "cached"
+                })
+        
         esp32_url = get_config("esp32_camera_url", "").strip() or os.getenv("ESP32_CAMERA_URL", "").strip()
         
         if esp32_url:
@@ -1237,6 +1248,8 @@ def get_latest():
                 resp = requests.get(esp32_url, timeout=5)
                 if resp.status_code == 200:
                     b64_img = base64.b64encode(resp.content).decode('utf-8')
+                    with LATEST_IMAGE_LOCK:
+                        LATEST_IMAGE = b64_img
                     return jsonify({
                         "image_url": f"data:image/jpeg;base64,{b64_img}",
                         "source": "esp32_camera"
@@ -1253,50 +1266,59 @@ def get_latest():
             except Exception as e:
                 print(f"Cloudinary API error: {e}")
         
-        return jsonify({"error": "No image sources available"}), 404
+        return jsonify({"error": "No image sources available. Please upload or register a camera."}), 404
     except Exception as e:
         print(f"Error in get_latest: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_cam():
+    global LATEST_IMAGE
     img_bytes = request.data
     if not img_bytes:
         return jsonify({"error": "No image"}), 400
 
     try:
-        # Cleanup old images (MAX_IMAGES = 1 logic)
-        try:
-            resources = cloudinary.api.resources(resource_type="image", max_results=100)
-            images = resources.get('resources', [])
-            if len(images) > 1:
-                sorted_images = sorted(images, key=lambda x: x['created_at'], reverse=True)
-                images_to_delete = sorted_images[1:]
-                for img in images_to_delete:
-                    try:
-                        cloudinary.uploader.destroy(img['public_id'])
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        with LATEST_IMAGE_LOCK:
+            LATEST_IMAGE = base64.b64encode(img_bytes).decode('utf-8')
         
-        filename = f"{int(time.time())}.jpg"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        with open(filepath, "wb") as f:
-            f.write(img_bytes)
+        cloudinary_url = None
+        if HAS_CLOUDINARY:
+            try:
+                resources = cloudinary.api.resources(resource_type="image", max_results=100)
+                images = resources.get('resources', [])
+                if len(images) > 1:
+                    sorted_images = sorted(images, key=lambda x: x['created_at'], reverse=True)
+                    images_to_delete = sorted_images[1:]
+                    for img in images_to_delete:
+                        try:
+                            cloudinary.uploader.destroy(img['public_id'])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            
+            try:
+                filename = f"{int(time.time())}.jpg"
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                
+                with open(filepath, "wb") as f:
+                    f.write(img_bytes)
 
-        result = cloudinary.uploader.upload(filepath, resource_type="auto")
-        cloudinary_url = result['secure_url']
-        
-        try:
-            os.remove(filepath)
-        except:
-            pass
+                result = cloudinary.uploader.upload(filepath, resource_type="auto")
+                cloudinary_url = result['secure_url']
+                
+                try:
+                    os.remove(filepath)
+                except:
+                    pass
+            except Exception as e:
+                print(f"Cloudinary upload failed: {e}")
         
         return jsonify({
-            "image_url": cloudinary_url,
-            "public_id": result['public_id']
+            "image_url": cloudinary_url or f"data:image/jpeg;base64,{LATEST_IMAGE}",
+            "cached": True,
+            "cloudinary": cloudinary_url is not None
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
