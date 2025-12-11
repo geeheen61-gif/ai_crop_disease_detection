@@ -86,6 +86,9 @@ DB = None
 SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "").strip()
 SERIAL_BAUD = int(os.getenv("ESP32_SERIAL_BAUD", "115200"))
 
+LATEST_SENSOR_READING = {}
+LATEST_SENSOR_READING_LOCK = threading.Lock()
+
 def ensure_db():
     global DB
     if DB is None:
@@ -203,8 +206,8 @@ def fetch_from_esp32(base_url):
                 t = float(j.get("temperature", 0.0))
                 h = float(j.get("humidity", 0.0))
                 s = int(j.get("soil", 0))
-                raining = 1 if bool(j.get("rain", False)) else 0
-                return {"temperature": t, "humidity": h, "soil": s, "rain": bool(raining)}
+                rain_val = int(j.get("rain", 4095))
+                return {"temperature": t, "humidity": h, "soil": s, "rain": rain_val}
             except Exception:
                 pass
     except Exception:
@@ -692,6 +695,14 @@ def sensors_pull():
 @app.get("/sensors/latest")
 def sensors_latest():
     try:
+        with LATEST_SENSOR_READING_LOCK:
+            if LATEST_SENSOR_READING:
+                return jsonify(LATEST_SENSOR_READING)
+        
+        lr = latest_reading()
+        if lr:
+            return jsonify(lr)
+        
         esp32_url = get_config("esp32_url", "").strip() or os.getenv("ESP32_SENSOR_URL", "").strip()
         
         if esp32_url:
@@ -703,11 +714,7 @@ def sensors_latest():
             except Exception as e:
                 print(f"ESP32 fetch error: {e}")
         
-        lr = latest_reading()
-        if lr:
-            return jsonify(lr)
-        
-        return jsonify({"error": "no_data", "message": "No ESP32 configured and no cached data"}), 404
+        return jsonify({"error": "no_data", "message": "Waiting for first sensor reading from ESP32"}), 404
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
@@ -742,6 +749,17 @@ def sensors_push():
         s = int(data.get("soil", 0))
         r = int(data.get("rain", 4095))
         ts = int(data.get("ts", int(time.time())))
+        
+        with LATEST_SENSOR_READING_LOCK:
+            LATEST_SENSOR_READING.clear()
+            LATEST_SENSOR_READING.update({
+                "ts": ts,
+                "temperature": t,
+                "humidity": h,
+                "soil": s,
+                "rain": r
+            })
+        
         conn = ensure_db()
         conn.execute("INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)", (ts, t, h, s, r))
         conn.commit()
