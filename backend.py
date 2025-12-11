@@ -977,7 +977,7 @@ def chat():
         
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
             
             preface = ""
             # reply_language already defined above
@@ -1016,7 +1016,7 @@ def translate():
             return jsonify({"translated": text}), 200
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
             lang = "Urdu" if target == "ur" else "English"
             resp = model.generate_content(f"Translate to {lang}. Only translation:\n\n{text}")
             txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
