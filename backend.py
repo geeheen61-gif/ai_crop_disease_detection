@@ -743,6 +743,40 @@ def sensors_history():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
+@app.post("/sensors/store")
+def store_sensor_data():
+    try:
+        data = request.get_json(silent=True) or {}
+        if not data:
+            return jsonify({"error": "no_data"}), 400
+        
+        t = float(data.get("t") or data.get("temperature") or 0.0)
+        h = float(data.get("h") or data.get("humidity") or 0.0)
+        s = int(data.get("s") or data.get("soil") or 0)
+        r = int(data.get("r") or data.get("rain") or 4095)
+        ts = int(data.get("ts") or time.time())
+
+        conn = ensure_db()
+        conn.execute(
+            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
+            (ts, t, h, s, r)
+        )
+        conn.commit()
+        
+        with LATEST_SENSOR_READING_LOCK:
+            LATEST_SENSOR_READING.clear()
+            LATEST_SENSOR_READING.update({
+                "ts": ts,
+                "temperature": t,
+                "humidity": h,
+                "soil": s,
+                "rain": r
+            })
+            
+        return jsonify({"ok": True, "ts": ts}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.post("/sensors/push")
 def sensors_push():
     try:
@@ -1320,6 +1354,44 @@ def upload_cam():
             "cached": True,
             "cloudinary": cloudinary_url is not None
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/sensors/store")
+def store_sensor_data():
+    try:
+        data = request.get_json(silent=True) or {}
+        if not data:
+            return jsonify({"error": "no_data"}), 400
+        
+        t = float(data.get("t") or data.get("temperature") or 0.0)
+        h = float(data.get("h") or data.get("humidity") or 0.0)
+        s = int(data.get("s") or data.get("soil") or 0)
+        r = int(data.get("r") or data.get("rain") or 4095)
+        ts = int(time.time())
+
+        conn = ensure_db()
+        conn.execute(
+            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
+            (ts, t, h, s, r)
+        )
+        conn.commit()
+        return jsonify({"ok": True, "ts": ts}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.get("/sensors/history")
+def get_sensor_history():
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        conn = ensure_db()
+        cur = conn.execute("SELECT ts, temperature, humidity, soil, rain FROM sensor_readings ORDER BY ts DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        readings = [
+            {"ts": r[0], "temperature": r[1], "humidity": r[2], "soil": r[3], "rain": r[4]}
+            for r in rows
+        ]
+        return jsonify({"history": readings}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
