@@ -1357,28 +1357,6 @@ def upload_cam():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.post("/sensors/store")
-def store_sensor_data():
-    try:
-        data = request.get_json(silent=True) or {}
-        if not data:
-            return jsonify({"error": "no_data"}), 400
-        
-        t = float(data.get("t") or data.get("temperature") or 0.0)
-        h = float(data.get("h") or data.get("humidity") or 0.0)
-        s = int(data.get("s") or data.get("soil") or 0)
-        r = int(data.get("r") or data.get("rain") or 4095)
-        ts = int(time.time())
-
-        conn = ensure_db()
-        conn.execute(
-            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
-            (ts, t, h, s, r)
-        )
-        conn.commit()
-        return jsonify({"ok": True, "ts": ts}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.get("/sensors/history")
 def get_sensor_history():
