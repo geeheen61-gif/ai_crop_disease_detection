@@ -100,7 +100,11 @@ def ensure_db():
             DB.execute("PRAGMA journal_mode=WAL")
         except Exception:
             pass
-        DB.execute("CREATE TABLE IF NOT EXISTS sensor_readings (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, temperature REAL, humidity REAL, soil INTEGER, rain INTEGER)")
+        DB.execute("CREATE TABLE IF NOT EXISTS sensor_readings (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, temperature REAL, humidity REAL, soil INTEGER, rain INTEGER, light REAL)")
+        try:
+            DB.execute("ALTER TABLE sensor_readings ADD COLUMN light REAL")
+        except Exception:
+            pass
         DB.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
         DB.execute("CREATE TABLE IF NOT EXISTS predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, image_url TEXT, disease_name TEXT, confidence REAL, guidance TEXT)")
         DB.commit()
@@ -175,12 +179,12 @@ def get_predictions(limit=20):
 
 def latest_reading():
     conn = ensure_db()
-    cur = conn.execute("SELECT ts, temperature, humidity, soil, rain FROM sensor_readings ORDER BY ts DESC LIMIT 1")
+    cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT 1")
     row = cur.fetchone()
     if not row:
         return None
-    ts, t, h, s, r = row
-    return {"ts": int(ts), "temperature": float(t), "humidity": float(h), "soil": int(s), "rain": int(r)}
+    ts, t, h, s, r, l = row[0], row[1], row[2], row[3], row[4], (row[5] if len(row) > 5 else 0.0)
+    return {"ts": int(ts), "temperature": float(t), "humidity": float(h), "soil": int(s), "rain": int(r), "light": float(l)}
 
 def parse_html(html):
     try:
@@ -754,12 +758,13 @@ def store_sensor_data():
         h = float(data.get("h") or data.get("humidity") or 0.0)
         s = int(data.get("s") or data.get("soil") or 0)
         r = int(data.get("r") or data.get("rain") or 4095)
+        l = float(data.get("l") or data.get("light") or 0.0)
         ts = int(data.get("ts") or time.time())
 
         conn = ensure_db()
         conn.execute(
-            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
-            (ts, t, h, s, r)
+            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
+            (ts, t, h, s, r, l)
         )
         conn.commit()
         
@@ -770,7 +775,8 @@ def store_sensor_data():
                 "temperature": t,
                 "humidity": h,
                 "soil": s,
-                "rain": r
+                "rain": r,
+                "light": l
             })
             
         return jsonify({"ok": True, "ts": ts}), 200
@@ -1363,10 +1369,10 @@ def get_sensor_history():
     try:
         limit = request.args.get("limit", 50, type=int)
         conn = ensure_db()
-        cur = conn.execute("SELECT ts, temperature, humidity, soil, rain FROM sensor_readings ORDER BY ts DESC LIMIT ?", (limit,))
+        cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT ?", (limit,))
         rows = cur.fetchall()
         readings = [
-            {"ts": r[0], "temperature": r[1], "humidity": r[2], "soil": r[3], "rain": r[4]}
+            {"ts": r[0], "temperature": r[1], "humidity": r[2], "soil": r[3], "rain": r[4], "light": r[5] if len(r) > 5 else 0.0}
             for r in rows
         ]
         return jsonify({"history": readings}), 200
