@@ -175,8 +175,6 @@ def get_predictions(limit=20):
         for r in rows
     ]
 
-
-
 def latest_reading():
     conn = ensure_db()
     cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT 1")
@@ -779,6 +777,8 @@ def store_sensor_data():
                 "light": l
             })
             
+        print(f"Stored sensor data: TS={ts}, T={t}, H={h}, S={s}, R={r}, L={l}") # Debug for user logic
+            
         return jsonify({"ok": True, "ts": ts}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1066,318 +1066,93 @@ def translate():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
+@app.post("/camera/register")
+def camera_register():
+    try:
+        data = request.get_json(silent=True) or {}
+        url = str(data.get("url") or "").strip()
+        if not url:
+            return jsonify({"error": "no_url"}), 400
+        set_config("esp32_camera_url", url)
+        return jsonify({"ok": True, "camera_url": url})
+    except Exception:
+        return jsonify({"error": "internal_error"}), 500
+
+@app.get("/camera/latest")
+def camera_latest():
+    try:
+        cam_url = get_config("esp32_camera_url", "")
+        latest_img = None
+        with LATEST_IMAGE_LOCK:
+            latest_img = LATEST_IMAGE
+            
+        return jsonify({
+            "stream_url": cam_url,
+            "latest_image_url": latest_img
+        })
+    except Exception:
+        return jsonify({"error": "internal_error"}), 500
+
 @app.post("/camera/upload")
 def camera_upload():
     try:
         if not HAS_CLOUDINARY:
             return jsonify({"error": "cloudinary_not_configured"}), 501
         
-        img_bytes = request.data
-        if not img_bytes:
-            return jsonify({"error": "no_image"}), 400
-        
-        cleanup_old_cloud_images()
-        filename = f"{int(time.time())}.jpg"
+        content = request.data
+        if not content:
+            return jsonify({"error": "no_content"}), 400
+
+        # Generate a filename
+        filename = f"cam_{int(time.time())}.jpg"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         
         with open(filepath, "wb") as f:
-            f.write(img_bytes)
-        
-        image_url = upload_to_cloudinary(filepath)
-        if not image_url:
-            os.remove(filepath)
-            return jsonify({"error": "upload_failed"}), 500
-        
-        try:
-            os.remove(filepath)
-        except Exception:
-            pass
-        
-        return jsonify({
-            "image_url": image_url,
-            "timestamp": int(time.time())
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.get("/camera/latest")
-def camera_latest():
-    try:
-        if not HAS_CLOUDINARY:
-            return jsonify({"error": "cloudinary_not_configured"}), 501
-        
-        resources = cloudinary.api.resources(resource_type="image", max_results=1)
-        if resources.get('resources'):
-            latest = resources['resources'][0]['secure_url']
-            return jsonify({"image_url": latest, "source": "cloudinary"})
-        else:
-            return jsonify({"error": "no_images"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.get("/camera/images")
-def camera_images():
-    try:
-        if not HAS_CLOUDINARY:
-            return jsonify({"error": "cloudinary_not_configured"}), 501
-        
-        limit = int(request.args.get("limit", "50"))
-        resources = cloudinary.api.resources(resource_type="image", max_results=limit)
-        if resources.get('resources'):
-            images = [{"url": img['secure_url'], "id": img['public_id']} for img in resources.get('resources', [])]
-            return jsonify({"images": images, "count": len(images)})
-        else:
-            return jsonify({"images": [], "count": 0})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.post("/camera/predict")
-def camera_predict():
-    try:
-        json_data = request.get_json(silent=True) or {}
-        form_data = request.form or {}
-        
-        api_key = form_data.get("gemini_api_key") or json_data.get("gemini_api_key") or default_gemini_key()
-        include_guidance = form_data.get("include_guidance") or json_data.get("include_guidance")
-        include_guidance = str(include_guidance or "").lower() in {"1", "true", "yes"}
-        language = str(form_data.get("language") or json_data.get("language") or "en").lower()
-        
-        content = None
-        file = request.files.get("file")
-        image_url = form_data.get("image_url") or json_data.get("image_url")
-        
-        if not file and not image_url:
-            return jsonify({"error": "no_image"}), 400
-        
-        if file:
-            try:
-                content = file.read()
-            except Exception:
-                return jsonify({"error": "file_read_failed"}), 400
-        elif image_url:
-            try:
-                r = requests.get(image_url, timeout=6)
-                r.raise_for_status()
-                content = r.content
-            except Exception:
-                return jsonify({"error": "image_url_fetch_failed"}), 400
-        
-        if not content:
-            return jsonify({"error": "no_content"}), 400
-        
-        buf = io.BytesIO(content)
-        res = classify_image(buf)
-        
-        if res is None:
-            remote = os.getenv("REMOTE_PREDICT_URL", "").strip()
-            if remote:
-                try:
-                    files = {'file': content}
-                    rr = requests.post(remote, files=files, timeout=10)
-                    if rr.status_code == 200:
-                        return jsonify(rr.json())
-                except Exception:
-                    pass
-        
-        if res is None:
-            return jsonify({"error": "classification_failed"}), 500
-        
-        top1, top3, cat_top, cat_top3 = res
-        conf = 0.0
-        try:
-            conf = float(max(p for _, p in top3))
-        except Exception:
-            conf = 0.0
-        
-        try:
-            healthy_prob = 0.0
-            for n, p in cat_top3:
-                if n == 'Healthy':
-                    healthy_prob = float(p)
-                    break
-            has_healthy_class = any(('healthy' in (n or '').lower()) for n, _ in top3)
-            if (cat_top != 'Healthy') and (has_healthy_class or healthy_prob >= 0.5 or conf < 0.25):
-                cat_top = 'Healthy'
-                cat_top3 = [('Healthy', max(healthy_prob, 0.8)), ('Leaf Spot', 0.1), ('Blight', 0.1)]
-                top3 = [(t[0], 0.65 if 'healthy' in t[0].lower() else (0.2 if len(top3) > 1 else 0.15)) for t in top3[:1]] + [(t[0], (0.2 if len(top3) > 1 else 0.15)) for t in top3[1:]]
-        except Exception:
-            pass
-        
-        guide = None
-        if include_guidance:
-            guide = guidance_text(cat_top, top3, api_key, language)
-        
-        if image_url:
-            try:
-                store_prediction(image_url, cat_top, conf, guide or "")
-            except Exception:
-                pass
-        
-        return jsonify({
-            "is_plant": True,
-            "confidence": conf,
-            "top_class_index": top1,
-            "top_classes": [{"name": n, "prob": p} for n, p in top3],
-            "category_top": cat_top,
-            "categories_top3": [{"name": n, "prob": p} for n, p in cat_top3],
-            "guidance": guide
-        })
-    except Exception:
-        return jsonify({"error": "internal_error"}), 500
-
-@app.get("/camera/stream")
-def camera_stream():
-    try:
-        camera_url = str(request.args.get("url") or os.getenv("ESP32_CAMERA_URL", "")).strip()
-        if not camera_url:
-            return jsonify({"error": "no_camera_url"}), 400
-        
-        def generate_stream():
-            try:
-                resp = requests.get(camera_url, stream=True, timeout=30)
-                if resp.status_code != 200:
-                    return
-                for chunk in resp.iter_content(chunk_size=4096):
-                    if chunk:
-                        yield chunk
-            except Exception:
-                pass
-        
-        return Response(generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.post("/camera/register")
-def camera_register():
-    try:
-        data = request.get_json(silent=True) or {}
-        camera_url = str(data.get("url") or "").strip()
-        if not camera_url:
-            return jsonify({"error": "no_camera_url"}), 400
-        set_config("esp32_camera_url", camera_url)
-        return jsonify({"ok": True, "camera_url": camera_url})
-    except Exception:
-        return jsonify({"error": "internal_error"}), 500
-
-@app.get("/camera/config")
-def camera_config():
-    try:
-        return jsonify({
-            "camera_url": get_config("esp32_camera_url", ""),
-            "cloudinary_enabled": HAS_CLOUDINARY,
-            "auto_cleanup_enabled": HAS_CLOUDINARY
-        })
-    except Exception:
-        return jsonify({"error": "internal_error"}), 500
-
-@app.route('/latest', methods=['GET'])
-def get_latest():
-    global LATEST_IMAGE
-    try:
-        with LATEST_IMAGE_LOCK:
-            if LATEST_IMAGE:
-                return jsonify({
-                    "image_url": f"data:image/jpeg;base64,{LATEST_IMAGE}",
-                    "source": "cached"
-                })
-        
-        esp32_url = get_config("esp32_camera_url", "").strip() or os.getenv("ESP32_CAMERA_URL", "").strip()
-        
-        if esp32_url:
-            try:
-                resp = requests.get(esp32_url, timeout=5)
-                if resp.status_code == 200:
-                    b64_img = base64.b64encode(resp.content).decode('utf-8')
-                    with LATEST_IMAGE_LOCK:
-                        LATEST_IMAGE = b64_img
-                    return jsonify({
-                        "image_url": f"data:image/jpeg;base64,{b64_img}",
-                        "source": "esp32_camera"
-                    })
-            except Exception as e:
-                print(f"ESP32 camera error: {e}")
-        
-        if HAS_CLOUDINARY:
-            try:
-                resources = cloudinary.api.resources(resource_type="image", max_results=1)
-                if resources.get('resources'):
-                    latest = resources['resources'][0]['secure_url']
-                    return jsonify({"image_url": latest, "source": "cloudinary"})
-            except Exception as e:
-                print(f"Cloudinary API error: {e}")
-        
-        return jsonify({"error": "No image sources available. Please upload or register a camera."}), 404
-    except Exception as e:
-        print(f"Error in get_latest: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/upload', methods=['POST'])
-def upload_cam():
-    global LATEST_IMAGE
-    img_bytes = request.data
-    if not img_bytes:
-        return jsonify({"error": "No image"}), 400
-
-    try:
-        with LATEST_IMAGE_LOCK:
-            LATEST_IMAGE = base64.b64encode(img_bytes).decode('utf-8')
-        
-        cloudinary_url = None
-        if HAS_CLOUDINARY:
-            try:
-                resources = cloudinary.api.resources(resource_type="image", max_results=100)
-                images = resources.get('resources', [])
-                if len(images) > 1:
-                    sorted_images = sorted(images, key=lambda x: x['created_at'], reverse=True)
-                    images_to_delete = sorted_images[1:]
-                    for img in images_to_delete:
-                        try:
-                            cloudinary.uploader.destroy(img['public_id'])
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+            f.write(content)
             
-            try:
-                filename = f"{int(time.time())}.jpg"
-                filepath = os.path.join(UPLOAD_FOLDER, filename)
-                
-                with open(filepath, "wb") as f:
-                    f.write(img_bytes)
-
-                result = cloudinary.uploader.upload(filepath, resource_type="auto")
-                cloudinary_url = result['secure_url']
-                
-                try:
-                    os.remove(filepath)
-                except:
-                    pass
-            except Exception as e:
-                print(f"Cloudinary upload failed: {e}")
+        print(f"Uploading file: {filepath}") # Debug log
+        url = upload_to_cloudinary(filepath)
+        print(f"Upload result: {url}") # Debug log
         
-        return jsonify({
-            "image_url": cloudinary_url or f"data:image/jpeg;base64,{LATEST_IMAGE}",
-            "cached": True,
-            "cloudinary": cloudinary_url is not None
-        })
+        # Cleanup local
+        try:
+            os.remove(filepath)
+        except:
+            pass
+            
+        if url:
+            # Store as a prediction (optional, or just keep as latest)
+            # For now, just return it
+            with LATEST_IMAGE_LOCK:
+                global LATEST_IMAGE
+                LATEST_IMAGE = url
+            
+            return jsonify({"ok": True, "url": url}), 200
+        else:
+            return jsonify({"error": "upload_failed"}), 500
+            
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.post("/upload")
+def upload_alias():
+    return camera_upload()
 
-@app.get("/sensors/history")
-def get_sensor_history():
+@app.get("/latest")
+def latest_alias():
+    # Return format matching camera_latest but with "image_url" key for compatibility if needed
     try:
-        limit = request.args.get("limit", 50, type=int)
-        conn = ensure_db()
-        cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT ?", (limit,))
-        rows = cur.fetchall()
-        readings = [
-            {"ts": r[0], "temperature": r[1], "humidity": r[2], "soil": r[3], "rain": r[4], "light": r[5] if len(r) > 5 else 0.0}
-            for r in rows
-        ]
-        return jsonify({"history": readings}), 200
+        res = camera_latest()
+        if res.status_code == 200:
+            data = res.get_json()
+            # If camera_latest returns latest_image_url, map it to image_url for testing_cam compat
+            if "latest_image_url" in data:
+                data["image_url"] = data["latest_image_url"]
+            return jsonify(data)
+        return res
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+if __name__ == "__main__":
+    start_serial_reader()
+    app.run(host="0.0.0.0", port=5000, debug=True)
