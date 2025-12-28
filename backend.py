@@ -740,20 +740,34 @@ def sensors_config():
 @app.route("/sensors/update", methods=["POST"])
 def store_sensor_data():
     try:
-        data = request.get_json(silent=True)
+        data = None
+        # Try multiple ways to parse JSON for robustness on Render
+        try:
+            data = request.get_json(force=True, silent=True)
+        except Exception as e:
+            print(f"DEBUG: get_json(force=True) failed: {e}")
+
         if data is None:
-            # Try to parse manually if Content-Type was missing
             try:
-                data = json.loads(request.data.decode('utf-8'))
-            except Exception:
-                data = None
-        
+                raw_text = request.get_data(as_text=True)
+                data = json.loads(raw_text)
+            except Exception as e:
+                print(f"DEBUG: get_data(as_text=True) failed: {e}")
+
+        if data is None:
+            try:
+                raw_bytes = request.get_data()
+                raw_text = raw_bytes.decode('utf-8')
+                data = json.loads(raw_text)
+            except Exception as e:
+                print(f"DEBUG: manual decode failed: {e}")
+
         if not data:
-            print(f"DEBUG: /sensors/store received no data. Raw: {request.data}")
-            return jsonify({"error": "no_data", "received": str(request.data)}), 400
-        
+            print(f"DEBUG: /sensors/store received no data. Raw bytes: {request.get_data()[:200]}")
+            return jsonify({"error": "no_data", "received": str(request.get_data()[:200])}), 400
+
         print(f"DEBUG: /sensors/store received: {data}")
-        
+
         t = float(data.get("t") or data.get("temperature") or 0.0)
         h = float(data.get("h") or data.get("humidity") or 0.0)
         s = int(data.get("s") or data.get("soil") or 0)
@@ -767,7 +781,7 @@ def store_sensor_data():
             (ts, t, h, s, r, l)
         )
         conn.commit()
-        
+
         with LATEST_SENSOR_READING_LOCK:
             LATEST_SENSOR_READING.clear()
             LATEST_SENSOR_READING.update({
@@ -783,6 +797,7 @@ def store_sensor_data():
 
         return jsonify({"ok": True, "ts": ts}), 200
     except Exception as e:
+        print(f"ERROR in store_sensor_data: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/sensors/push", methods=["POST"])
