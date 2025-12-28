@@ -6,6 +6,8 @@ import re
 import sqlite3
 import threading
 import base64
+import ssl
+import urllib3
 from flask import Flask, jsonify, request, Response, send_from_directory
 from flask_cors import CORS
 import requests
@@ -25,7 +27,13 @@ except Exception:
     HAS_CLOUDINARY = False
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["Content-Type", "Authorization"]}})
+
+# Disable InsecureRequestWarning for development when verify=False is used
+try:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -740,74 +748,62 @@ def sensors_config():
 @app.route("/sensors/update", methods=["POST"])
 def store_sensor_data():
     try:
-        print(f"DEBUG: Request method: {request.method}")
-        print(f"DEBUG: Content-Type: {request.headers.get('Content-Type')}")
-        print(f"DEBUG: Raw request data length: {len(request.get_data())}")
-
         data = None
-        # Try multiple ways to parse data for maximum robustness on Render
-        try:
-            data = request.get_json(force=True, silent=True)
-            print(f"DEBUG: get_json(force=True) succeeded: {data}")
-        except Exception as e:
-            print(f"DEBUG: get_json(force=True) failed: {e}")
-
-        if data is None:
+        
+        # Debug: Log all request info
+        print(f"[DEBUG] Request method: {request.method}")
+        print(f"[DEBUG] Content-Type: {request.content_type}")
+        print(f"[DEBUG] is_json: {request.is_json}")
+        print(f"[DEBUG] Raw data length: {len(request.data)}")
+        
+        # Robust parsing for JSON
+        if request.is_json:
+            data = request.get_json(silent=True)
+            print(f"[DEBUG] Parsed from is_json: {data}")
+        
+        if not data:
             try:
                 raw_text = request.get_data(as_text=True)
-                print(f"DEBUG: Raw text: '{raw_text}'")
+                print(f"[DEBUG] Raw text: {raw_text[:200] if raw_text else 'empty'}")
                 if raw_text:
                     data = json.loads(raw_text)
-                    print(f"DEBUG: JSON loads from raw_text succeeded: {data}")
+                    print(f"[DEBUG] Parsed from raw_text: {data}")
             except Exception as e:
-                print(f"DEBUG: get_data(as_text=True) failed: {e}")
+                print(f"[DEBUG] Failed to parse raw_text: {e}")
+                pass
 
-        if data is None:
-            try:
-                raw_bytes = request.get_data()
-                print(f"DEBUG: Raw bytes length: {len(raw_bytes)}")
-                if raw_bytes:
-                    raw_text = raw_bytes.decode('utf-8', errors='ignore')
-                    print(f"DEBUG: Decoded text: '{raw_text}'")
-                    data = json.loads(raw_text)
-                    print(f"DEBUG: JSON loads from decoded bytes succeeded: {data}")
-            except Exception as e:
-                print(f"DEBUG: manual decode failed: {e}")
-
-        # Try form data as fallback
-        if data is None and request.form:
-            try:
-                data = {}
-                for key, value in request.form.items():
-                    if key in ['t', 'h', 's', 'r', 'l', 'temperature', 'humidity', 'soil', 'rain', 'light', 'ts']:
-                        data[key] = value
-                print(f"DEBUG: Form data parsed: {data}")
-            except Exception as e:
-                print(f"DEBUG: form data parsing failed: {e}")
+        if not data and request.form:
+            data = request.form.to_dict()
+            print(f"[DEBUG] Parsed from form: {data}")
 
         if not data:
-            raw_content = request.get_data()[:500]
-            print(f"DEBUG: /sensors/store received no data. Raw content: {raw_content}")
-            return jsonify({"error": "no_data", "received": str(raw_content)}), 400
+            print(f"[ERROR] No data received in request")
+            return jsonify({"error": "no_data", "message": "No JSON or form data"}), 400
 
-        print(f"DEBUG: /sensors/store received: {data}")
-        print(f"DEBUG: Data types - temperature: {type(data.get('temperature'))}, humidity: {type(data.get('humidity'))}, soil: {type(data.get('soil'))}")
-        print(f"DEBUG: Raw request data: {request.get_data()[:200]}")
+        # Mapping for short names to long names
+        mapping = {
+            't': 'temperature',
+            'h': 'humidity',
+            's': 'soil',
+            'r': 'rain',
+            'l': 'light'
+        }
+        for short, long in mapping.items():
+            if short in data and long not in data:
+                data[long] = data[short]
 
-        # Validate required fields exist (but allow zero values)
-        required_fields = ["temperature", "humidity", "soil", "rain", "light"]
-        for field in required_fields:
-            if field not in data:
-                print(f"DEBUG: Missing field: {field}")
-                return jsonify({"error": f"Missing required field: {field}"}), 400
-
-        # Extract values (allow zeros)
-        t = float(data.get("temperature", 0.0))
-        h = float(data.get("humidity", 0.0))
-        s = int(data.get("soil", 0))
-        r = int(data.get("rain", 4095))
-        l = float(data.get("light", 0.0))
-        ts = int(data.get("ts") or time.time())
+        # Extract values with defaults
+        try:
+            t = float(data.get("temperature", 0.0))
+            h = float(data.get("humidity", 0.0))
+            s = int(data.get("soil", 0))
+            r = int(data.get("rain", 4095))
+            l = float(data.get("light", 0.0))
+            ts = int(data.get("ts") or time.time())
+            print(f"[SUCCESS] Parsed values: T={t}, H={h}, S={s}, R={r}, L={l}")
+        except (ValueError, TypeError) as e:
+            print(f"[ERROR] Invalid data types: {e}")
+            return jsonify({"error": "invalid_data_types", "details": str(e)}), 400
 
         conn = get_db()
         conn.execute(
@@ -815,6 +811,7 @@ def store_sensor_data():
             (ts, t, h, s, r, l)
         )
         conn.commit()
+        print(f"[SUCCESS] Data stored in database")
 
         with LATEST_SENSOR_READING_LOCK:
             LATEST_SENSOR_READING.clear()
@@ -826,8 +823,6 @@ def store_sensor_data():
                 "rain": r,
                 "light": l
             })
-
-        print(f"Stored sensor data: TS={ts}, T={t}, H={h}, S={s}, R={r}, L={l}")
 
         return jsonify({"ok": True, "ts": ts}), 200
     except Exception as e:
@@ -1278,18 +1273,14 @@ def predictions_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-if __name__ == "__main__":
-    # This block only runs when you execute 'python backend.py' locally.
-    # On Render, gunicorn is used and this block is ignored.
-    
-    # 1. Start Serial Reader for local USB-connected sensors
-    print("--- [LOCAL] Starting Serial Reader Check ---")
-    start_serial_reader()
-    
-    # 2. Determine port (Render uses $PORT, local uses 5000)
-    port = int(os.environ.get("PORT", 5000))
-    
-    # 3. Start Flask dev server
-    print(f"--- [LOCAL] Starting Development Server on http://0.0.0.0:{port} ---")
-    app.run(host="0.0.0.0", port=port, debug=True)
+if __name__ == '__main__':
+    # Use PORT env var for compatibility with platforms like Render
+    port = int(os.getenv("PORT", "5000"))
+    ssl_cert = os.getenv("SSL_CERT_PATH", "").strip()
+    ssl_key = os.getenv("SSL_KEY_PATH", "").strip()
+    if ssl_cert and ssl_key and os.path.exists(ssl_cert) and os.path.exists(ssl_key):
+        print(f"--- Starting HTTPS server on https://0.0.0.0:{port} using {ssl_cert} and {ssl_key} ---")
+        app.run(host="0.0.0.0", port=port, ssl_context=(ssl_cert, ssl_key))
+    else:
+        print(f"--- Starting HTTP server on http://0.0.0.0:{port} ---")
+        app.run(host="0.0.0.0", port=port)
