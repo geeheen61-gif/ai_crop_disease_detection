@@ -697,7 +697,7 @@ def guidance_text(category, top3_classes, api_key, language="en"):
 try_load_class_names()
 ensure_db()
 
-@app.post("/esp32/register")
+@app.route("/esp32/register", methods=["POST"])
 def esp32_register():
     try:
         data = request.get_json(silent=True) or {}
@@ -709,7 +709,7 @@ def esp32_register():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/sensors/pull")
+@app.route("/sensors/pull", methods=["POST"])
 def sensors_pull():
     try:
         data = request.get_json(silent=True) or {}
@@ -730,7 +730,7 @@ def sensors_pull():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.get("/sensors/latest")
+@app.route("/sensors/latest", methods=["GET"])
 def sensors_latest():
     try:
         with LATEST_SENSOR_READING_LOCK:
@@ -756,7 +756,7 @@ def sensors_latest():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.get("/sensors/config")
+@app.route("/sensors/config", methods=["GET"])
 def sensors_config():
     try:
         return jsonify({
@@ -766,8 +766,8 @@ def sensors_config():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/sensors/store")
-@app.post("/sensors/update")
+@app.route("/sensors/store", methods=["POST"])
+@app.route("/sensors/update", methods=["POST"])
 def store_sensor_data():
     try:
         data = request.get_json(silent=True)
@@ -815,7 +815,7 @@ def store_sensor_data():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.post("/sensors/push")
+@app.route("/sensors/push", methods=["POST"])
 def sensors_push():
     try:
         data = request.get_json(silent=True) or {}
@@ -847,7 +847,7 @@ def sensors_push():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/sensors/register")
+@app.route("/sensors/register", methods=["POST"])
 def sensors_register():
     try:
         data = request.get_json(silent=True) or {}
@@ -859,7 +859,7 @@ def sensors_register():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.get("/")
+@app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "message": "Plant Disease Detection API",
@@ -868,7 +868,7 @@ def home():
         "model_loaded": MODEL is not None
     })
 
-@app.get("/health")
+@app.route("/health", methods=["GET"])
 def health():
     lr = latest_reading()
     now = int(time.time())
@@ -883,7 +883,7 @@ def health():
         "sensor_available": sensor_ok
     })
 
-@app.get("/status")
+@app.route("/status", methods=["GET"])
 def status():
     return jsonify({
         "ml_available": HAS_ML,
@@ -908,11 +908,11 @@ def status():
         ] if p and os.path.exists(p)]
     })
 
-@app.get("/ping")
+@app.route("/ping", methods=["GET"])
 def ping():
     return jsonify({"status": "ok", "time": int(time.time()), "ok": True})
 
-@app.post("/predict")
+@app.route("/predict", methods=["POST"])
 def predict():
     try:
         json_data = request.get_json(silent=True) or {}
@@ -1053,7 +1053,7 @@ def predict():
         print(f"Predict error: {e}")
         return jsonify({"error": "internal_error", "details": str(e)}), 500
 
-@app.get("/predictions")
+@app.route("/predictions", methods=["GET"])
 def get_stored_predictions():
     try:
         limit = request.args.get("limit", 20, type=int)
@@ -1062,7 +1062,7 @@ def get_stored_predictions():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.post("/chat")
+@app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.get_json(silent=True) or {}
@@ -1114,7 +1114,7 @@ def chat():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/translate")
+@app.route("/translate", methods=["POST"])
 def translate():
     try:
         data = request.get_json(silent=True) or {}
@@ -1137,7 +1137,7 @@ def translate():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/camera/register")
+@app.route("/camera/register", methods=["POST"])
 def camera_register():
     try:
         data = request.get_json(silent=True) or {}
@@ -1149,7 +1149,7 @@ def camera_register():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.get("/camera/latest")
+@app.route("/camera/latest", methods=["GET"])
 def camera_latest():
     try:
         global LATEST_IMAGE
@@ -1177,7 +1177,7 @@ def camera_latest():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.post("/camera/upload")
+@app.route("/camera/upload", methods=["POST"])
 def camera_upload():
     try:
         if not HAS_CLOUDINARY:
@@ -1219,11 +1219,11 @@ def camera_upload():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.post("/upload")
+@app.route("/upload", methods=["POST"])
 def upload_alias():
     return camera_upload()
 
-@app.get("/latest")
+@app.route("/latest", methods=["GET"])
 def latest_alias():
     # Return format matching camera_latest but with "image_url" key for compatibility if needed
     try:
@@ -1238,7 +1238,7 @@ def latest_alias():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.get("/sensors/history")
+@app.route("/sensors/history", methods=["GET"])
 def sensors_history_endpoint():
     try:
         limit = int(request.args.get("limit", 50))
@@ -1273,7 +1273,7 @@ def sensors_history_endpoint():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.get("/predictions/history")
+@app.route("/predictions/history", methods=["GET"])
 def predictions_history():
     try:
         limit = int(request.args.get("limit", 20))
