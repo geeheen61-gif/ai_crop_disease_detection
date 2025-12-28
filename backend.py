@@ -964,22 +964,14 @@ def predict():
         except Exception:
             pass
         
+        # Guidance generation
         guide = None
         if include_guidance:
             guide = guidance_text(cat_top, top3, api_key, language)
         
-        # If we have a file but no image_url, try to upload to get a URL for history
-        if not image_url and file and HAS_CLOUDINARY:
-            try:
-                filename = f"pred_{int(time.time())}.jpg"
-                filepath = os.path.join(UPLOAD_FOLDER, filename)
-                with open(filepath, "wb") as f:
-                    f.write(content)
-                image_url = upload_to_cloudinary(filepath)
-                try: os.remove(filepath)
-                except: pass
-            except Exception as e:
-                print(f"Failed to upload prediction image: {e}")
+        # We no longer upload phone/gallery images to Cloudinary for predictions
+        # to save space and respect the user's request. 
+        # Only existing image_urls (like from ESP32-CAM) will be preserved in history.
 
         # Always store the prediction for history
         try:
