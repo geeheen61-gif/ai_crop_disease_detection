@@ -767,11 +767,22 @@ def sensors_config():
         return jsonify({"error": "internal_error"}), 500
 
 @app.post("/sensors/store")
+@app.post("/sensors/update")
 def store_sensor_data():
     try:
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if data is None:
+            # Try to parse manually if Content-Type was missing
+            try:
+                data = json.loads(request.data.decode('utf-8'))
+            except Exception:
+                data = None
+        
         if not data:
-            return jsonify({"error": "no_data"}), 400
+            print(f"DEBUG: /sensors/store received no data. Raw: {request.data}")
+            return jsonify({"error": "no_data", "received": str(request.data)}), 400
+        
+        print(f"DEBUG: /sensors/store received: {data}")
         
         t = float(data.get("t") or data.get("temperature") or 0.0)
         h = float(data.get("h") or data.get("humidity") or 0.0)
@@ -1273,6 +1284,10 @@ def predictions_history():
         return jsonify({"predictions": predictions})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.get("/ping")
+def ping():
+    return jsonify({"status": "ok", "time": int(time.time())})
 
 if __name__ == "__main__":
     start_serial_reader()
