@@ -1102,30 +1102,23 @@ def camera_register():
 
 @app.route("/camera/latest", methods=["GET"])
 def camera_latest():
+    """Serves the latest ESP32-CAM image, ensuring consistency across all server workers."""
     try:
-        global LATEST_IMAGE
         cam_url = get_config("esp32_camera_url", "")
-        latest_img = None
-        with LATEST_IMAGE_LOCK:
-            latest_img = LATEST_IMAGE
-
+        # Always fetch from DB to ensure workers are in sync
+        latest_img = str(get_config("permanent_latest_cam_url", "") or "").strip()
+        
         if not latest_img:
-            cached = str(get_config("latest_image_url", "") or "").strip()
-            latest_img = cached if cached else None
-
-        if not latest_img:
-            latest_img = latest_cloudinary_image_url()
-            if latest_img:
-                set_config("latest_image_url", latest_img)
-                with LATEST_IMAGE_LOCK:
-                    LATEST_IMAGE = latest_img
+            # Fallback to the generic latest if permanent is not set yet
+            latest_img = str(get_config("latest_image_url", "") or "").strip()
 
         return jsonify({
             "stream_url": cam_url,
             "latest_image_url": latest_img,
             "image_url": latest_img
-        })
-    except Exception:
+        }), 200
+    except Exception as e:
+        print(f"Error in camera_latest: {e}")
         return jsonify({"error": "internal_error"}), 500
 
 @app.route("/camera/upload", methods=["POST"])
@@ -1157,12 +1150,10 @@ def camera_upload():
             pass
             
         if url:
-            with LATEST_IMAGE_LOCK:
-                global LATEST_IMAGE
-                LATEST_IMAGE = url
-
+            # IMPORTANT: Store under a specific key that only CAM uploads touch
+            set_config("permanent_latest_cam_url", url)
             set_config("latest_image_url", url)
-            
+            print(f"DEBUG: Persistent camera URL updated: {url}")
             return jsonify({"ok": True, "url": url}), 200
         else:
             return jsonify({"error": "upload_failed"}), 500
