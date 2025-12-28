@@ -699,6 +699,7 @@ init_db()
 def sensors_latest():
     """Returns the latest sensor data, preferring database for consistency across workers."""
     try:
+        # print("DEBUG: fetching sensors/latest")
         # 1. Try Database first (consistent across multi-worker setups)
         lr = latest_reading()
         if lr and not lr.get("is_default"):
@@ -1015,8 +1016,10 @@ def predict():
         return jsonify({"error": "internal_error", "details": str(e)}), 500
 
 @app.route("/predictions", methods=["GET"])
+@app.route("/predictions/history", methods=["GET"])
 def get_stored_predictions():
     try:
+        print("DEBUG: Fetching predictions history")
         limit = request.args.get("limit", 20, type=int)
         predictions = get_predictions(limit=limit)
         return jsonify({"predictions": predictions}), 200
@@ -1134,11 +1137,14 @@ def camera_latest():
 @app.route("/camera/upload", methods=["POST"])
 def camera_upload():
     try:
+        print("DEBUG: Received camera upload request")
         if not HAS_CLOUDINARY:
+            print("ERROR: Cloudinary not configured")
             return jsonify({"error": "cloudinary_not_configured"}), 501
         
         content = request.data
         if not content:
+            print("ERROR: No content in camera upload")
             return jsonify({"error": "no_content"}), 400
 
         cleanup_old_cloud_images()
