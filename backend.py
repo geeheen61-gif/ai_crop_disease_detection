@@ -29,7 +29,7 @@ CORS(app)
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-MAX_CLOUD_IMAGES = int(os.getenv("MAX_CLOUD_IMAGES", "50"))
+MAX_CLOUD_IMAGES = int(os.getenv("MAX_CLOUD_IMAGES", "1"))
 
 if HAS_CLOUDINARY:
     try:
@@ -142,19 +142,38 @@ def upload_to_cloudinary(file_path):
     if not HAS_CLOUDINARY:
         return None
     try:
+        cleanup_old_cloud_images() # Clean before upload to maintain limit
         result = cloudinary.uploader.upload(file_path, resource_type="auto")
         return result.get('secure_url')
     except Exception:
         return None
 
+def latest_cloudinary_image_url():
+    if not HAS_CLOUDINARY:
+        return None
+    try:
+        resources = cloudinary.api.resources(resource_type="image", max_results=1, direction="desc") # simplified
+        images = resources.get("resources", []) or []
+        if not images:
+            return None
+        img = images[0] or {}
+        return img.get("secure_url") or img.get("url")
+    except Exception:
+        return None
+
 def store_prediction(image_url, disease_name, confidence, guidance=""):
-    conn = ensure_db()
-    ts = int(time.time())
-    conn.execute(
-        "INSERT INTO predictions(ts, image_url, disease_name, confidence, guidance) VALUES(?, ?, ?, ?, ?)",
-        (ts, image_url, disease_name, confidence, guidance)
-    )
-    conn.commit()
+    try:
+        print(f"DEBUG: Storing prediction - Disease: {disease_name}, Confidence: {confidence}")
+        conn = ensure_db()
+        ts = int(time.time())
+        conn.execute(
+            "INSERT INTO predictions(ts, image_url, disease_name, confidence, guidance) VALUES(?, ?, ?, ?, ?)",
+            (ts, image_url, disease_name, confidence, guidance)
+        )
+        conn.commit()
+        print(f"DEBUG: Prediction stored successfully at TS={ts}")
+    except Exception as e:
+        print(f"DEBUG: Error in store_prediction: {e}")
 
 def get_predictions(limit=20):
     conn = ensure_db()
@@ -181,8 +200,18 @@ def latest_reading():
     row = cur.fetchone()
     if not row:
         return None
-    ts, t, h, s, r, l = row[0], row[1], row[2], row[3], row[4], (row[5] if len(row) > 5 else 0.0)
-    return {"ts": int(ts), "temperature": float(t), "humidity": float(h), "soil": int(s), "rain": int(r), "light": float(l)}
+    ts = int(row[0])
+    t = float(row[1] or 0.0)
+    h = float(row[2] or 0.0)
+    s = int(row[3] or 0)
+    r = int(row[4] if row[4] is not None else 4095)
+    l = 0.0
+    if len(row) > 5 and row[5] is not None:
+        try:
+            l = float(row[5])
+        except Exception:
+            l = 0.0
+    return {"ts": ts, "temperature": t, "humidity": h, "soil": s, "rain": r, "light": l}
 
 def parse_html(html):
     try:
@@ -194,8 +223,8 @@ def parse_html(html):
         h = float(hum_m.group(1)) if hum_m else 0.0
         s = int(soil_m.group(1)) if soil_m else 0
         rv = rain_m.group(1).strip().lower() if rain_m else "no rain"
-        raining = 1 if rv == "rain" else 0
-        return {"temperature": t, "humidity": h, "soil": s, "rain": bool(raining)}
+        rain_val = 0 if rv == "rain" else 4095
+        return {"temperature": t, "humidity": h, "soil": s, "rain": int(rain_val)}
     except Exception:
         return None
 
@@ -278,9 +307,10 @@ def read_serial_loop(port_name):
             if rd:
                 conn = ensure_db()
                 ts = int(time.time())
+                rain_raw = 0 if rd["rain"] else 4095
                 conn.execute(
-                    "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)",
-                    (ts, float(rd["temperature"]), float(rd["humidity"]), int(rd["soil"]), 1 if rd["rain"] else 0),
+                    "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
+                    (ts, float(rd["temperature"]), float(rd["humidity"]), int(rd["soil"]), int(rain_raw), 0.0),
                 )
                 conn.commit()
         except Exception:
@@ -691,7 +721,10 @@ def sensors_pull():
             return jsonify({"error": "fetch_failed"}), 502
         conn = ensure_db()
         ts = int(time.time())
-        conn.execute("INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)", (ts, float(reading["temperature"]), float(reading["humidity"]), int(reading["soil"]), 1 if reading["rain"] else 0))
+        conn.execute(
+            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
+            (ts, float(reading["temperature"]), float(reading["humidity"]), int(reading["soil"]), int(reading.get("rain", 4095)), float(reading.get("light", 0.0)))
+        )
         conn.commit()
         return jsonify({"ts": ts, **reading})
     except Exception:
@@ -733,18 +766,6 @@ def sensors_config():
     except Exception:
         return jsonify({"error": "internal_error"}), 500
 
-@app.get("/sensors/history")
-def sensors_history():
-    try:
-        limit = int(request.args.get("limit", "20"))
-        conn = ensure_db()
-        cur = conn.execute("SELECT ts, temperature, humidity, soil, rain FROM sensor_readings ORDER BY ts DESC LIMIT ?", (limit,))
-        rows = cur.fetchall()
-        items = [{"ts": int(ts), "temperature": float(t), "humidity": float(h), "soil": int(s), "rain": bool(r)} for ts, t, h, s, r in rows]
-        return jsonify({"items": items})
-    except Exception:
-        return jsonify({"error": "internal_error"}), 500
-
 @app.post("/sensors/store")
 def store_sensor_data():
     try:
@@ -776,9 +797,9 @@ def store_sensor_data():
                 "rain": r,
                 "light": l
             })
-            
-        print(f"Stored sensor data: TS={ts}, T={t}, H={h}, S={s}, R={r}, L={l}") # Debug for user logic
-            
+
+        print(f"Stored sensor data: TS={ts}, T={t}, H={h}, S={s}, R={r}, L={l}")
+
         return jsonify({"ok": True, "ts": ts}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -791,6 +812,7 @@ def sensors_push():
         h = float(data.get("humidity", 0.0))
         s = int(data.get("soil", 0))
         r = int(data.get("rain", 4095))
+        l = float(data.get("light", 0.0))
         ts = int(data.get("ts", int(time.time())))
         
         with LATEST_SENSOR_READING_LOCK:
@@ -800,11 +822,15 @@ def sensors_push():
                 "temperature": t,
                 "humidity": h,
                 "soil": s,
-                "rain": r
+                "rain": r,
+                "light": l
             })
         
         conn = ensure_db()
-        conn.execute("INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain) VALUES(?, ?, ?, ?, ?)", (ts, t, h, s, r))
+        conn.execute(
+            "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
+            (ts, t, h, s, r, l),
+        )
         conn.commit()
         return jsonify({"ok": True})
     except Exception:
@@ -871,6 +897,13 @@ def status():
         ] if p and os.path.exists(p)]
     })
 
+@app.get("/ping")
+def ping():
+    try:
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False}), 500
+
 @app.post("/predict")
 def predict():
     try:
@@ -897,11 +930,13 @@ def predict():
                 return jsonify({"error": "file_read_failed"}), 400
         elif image_url:
             try:
-                r = requests.get(image_url, timeout=6)
+                print(f"Fetching image from: {image_url}")
+                r = requests.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
                 r.raise_for_status()
                 content = r.content
-            except Exception:
-                return jsonify({"error": "image_url_fetch_failed"}), 400
+            except Exception as e:
+                print(f"Fetch failed: {e}")
+                return jsonify({"error": "image_url_fetch_failed", "details": str(e)}), 400
         
         if not content:
             return jsonify({"error": "no_content"}), 400
@@ -927,16 +962,27 @@ def predict():
         
         buf.seek(0)
         res = classify_image(buf)
+        
+        # If local classification fails, try remote
         if res is None:
             remote = os.getenv("REMOTE_PREDICT_URL", "").strip()
             if remote:
                 try:
-                    files = {'file': content}
+                    print(f"DEBUG: Trying remote prediction at {remote}")
+                    files = {"file": ("image.jpg", content, "image/jpeg")}
                     rr = requests.post(remote, files=files, timeout=10)
                     if rr.status_code == 200:
-                        return jsonify(rr.json())
-                except Exception:
-                    pass
+                        remote_res = rr.json()
+                        # Capture values from remote response for storage
+                        cat_top = remote_res.get("category_top") or remote_res.get("disease") or "Unknown"
+                        conf = float(remote_res.get("confidence") or 0.0)
+                        guide = remote_res.get("guidance") or ""
+                        
+                        # Store and return
+                        store_prediction(image_url or "", cat_top, conf, guide)
+                        return jsonify(remote_res)
+                except Exception as e:
+                    print(f"DEBUG: Remote prediction failed: {e}")
         
         if res is None:
             return jsonify({"error": "classification_failed"}), 500
@@ -966,11 +1012,24 @@ def predict():
         if include_guidance:
             guide = guidance_text(cat_top, top3, api_key, language)
         
-        if image_url:
+        # If we have a file but no image_url, try to upload to get a URL for history
+        if not image_url and file and HAS_CLOUDINARY:
             try:
-                store_prediction(image_url, cat_top, conf, guide or "")
+                filename = f"pred_{int(time.time())}.jpg"
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                with open(filepath, "wb") as f:
+                    f.write(content)
+                image_url = upload_to_cloudinary(filepath)
+                try: os.remove(filepath)
+                except: pass
             except Exception as e:
-                print(f"Failed to store prediction: {e}")
+                print(f"Failed to upload prediction image: {e}")
+
+        # Always store the prediction for history
+        try:
+            store_prediction(image_url or "", cat_top, conf, guide or "")
+        except Exception as e:
+            print(f"Failed to store prediction: {e}")
         
         return jsonify({
             "is_plant": True,
@@ -979,10 +1038,12 @@ def predict():
             "top_classes": [{"name": n, "prob": p} for n, p in top3],
             "category_top": cat_top,
             "categories_top3": [{"name": n, "prob": p} for n, p in cat_top3],
-            "guidance": guide
+            "guidance": guide,
+            "image_url": image_url # Return the URL if we generated one
         })
-    except Exception:
-        return jsonify({"error": "internal_error"}), 500
+    except Exception as e:
+        print(f"Predict error: {e}")
+        return jsonify({"error": "internal_error", "details": str(e)}), 500
 
 @app.get("/predictions")
 def get_stored_predictions():
@@ -1003,13 +1064,14 @@ def chat():
             return jsonify({"error": "no_message"}), 400
         
         api_key = data.get("gemini_api_key") or default_gemini_key()
-        reply_language = str(data.get("reply_language") or "").lower()
+        # 'language' param passed from Flutter ('en' or 'ur')
+        req_language = str(data.get("language") or "en").lower()
         
         if genai is None or not api_key:
             category = data.get("category")
             guide_map = CATEGORY_GUIDE
             default_msg = "Please ask your local agricultural extension."
-            if reply_language == "ur":
+            if req_language == "ur":
                 guide_map = CATEGORY_GUIDE_UR
                 default_msg = "براہ کرم اپنے مقامی زرعی توسیعی مرکز سے پوچھیں۔"
             
@@ -1020,7 +1082,6 @@ def chat():
             model = genai.GenerativeModel('gemini-2.5-flash-lite')
             
             preface = ""
-            # reply_language already defined above
             category = data.get("category")
             if category:
                 preface += f"Predicted category: {category}. "
@@ -1030,14 +1091,16 @@ def chat():
                 classes_text = ", ".join([f"{c.get('name')} ({float(c.get('prob', 0))*100:.1f}%)" for c in top_classes])
                 preface += f"Top classes: {classes_text}. "
             
-            if reply_language in {"ur", "en"}:
-                preface = f"Respond in {language_name(reply_language)}. " + preface
+            # Explicit instruction for language
+            target_lang_name = "Urdu" if req_language == "ur" else "English"
+            preface = f"You are a helpful agriculture assistant for farmers. Respond in {target_lang_name}. " + preface
+            
             resp = model.generate_content(preface + message)
             txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
             return jsonify({"reply": txt or "No response"})
         except Exception:
             err_msg = "AI service unavailable."
-            if reply_language == "ur":
+            if req_language == "ur":
                 err_msg = "AI سروس دستیاب نہیں ہے۔"
             return jsonify({"reply": err_msg})
     except Exception:
@@ -1081,14 +1144,27 @@ def camera_register():
 @app.get("/camera/latest")
 def camera_latest():
     try:
+        global LATEST_IMAGE
         cam_url = get_config("esp32_camera_url", "")
         latest_img = None
         with LATEST_IMAGE_LOCK:
             latest_img = LATEST_IMAGE
-            
+
+        if not latest_img:
+            cached = str(get_config("latest_image_url", "") or "").strip()
+            latest_img = cached if cached else None
+
+        if not latest_img:
+            latest_img = latest_cloudinary_image_url()
+            if latest_img:
+                set_config("latest_image_url", latest_img)
+                with LATEST_IMAGE_LOCK:
+                    LATEST_IMAGE = latest_img
+
         return jsonify({
             "stream_url": cam_url,
-            "latest_image_url": latest_img
+            "latest_image_url": latest_img,
+            "image_url": latest_img
         })
     except Exception:
         return jsonify({"error": "internal_error"}), 500
@@ -1103,16 +1179,17 @@ def camera_upload():
         if not content:
             return jsonify({"error": "no_content"}), 400
 
-        # Generate a filename
+        cleanup_old_cloud_images()
+
         filename = f"cam_{int(time.time())}.jpg"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         
         with open(filepath, "wb") as f:
             f.write(content)
             
-        print(f"Uploading file: {filepath}") # Debug log
+        print(f"Uploading file: {filepath}")
         url = upload_to_cloudinary(filepath)
-        print(f"Upload result: {url}") # Debug log
+        print(f"Upload result: {url}")
         
         # Cleanup local
         try:
@@ -1121,11 +1198,11 @@ def camera_upload():
             pass
             
         if url:
-            # Store as a prediction (optional, or just keep as latest)
-            # For now, just return it
             with LATEST_IMAGE_LOCK:
                 global LATEST_IMAGE
                 LATEST_IMAGE = url
+
+            set_config("latest_image_url", url)
             
             return jsonify({"ok": True, "url": url}), 200
         else:
@@ -1150,6 +1227,50 @@ def latest_alias():
                 data["image_url"] = data["latest_image_url"]
             return jsonify(data)
         return res
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.get("/sensors/history")
+def sensors_history_endpoint():
+    try:
+        limit = int(request.args.get("limit", 50))
+        conn = ensure_db()
+        cur = conn.execute(
+            "SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT ?",
+            (limit,)
+        )
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            ts = int(r[0])
+            t = float(r[1] or 0.0)
+            h = float(r[2] or 0.0)
+            s = int(r[3] or 0)
+            rain_val = int(r[4] if r[4] is not None else 4095)
+            l = 0.0
+            if len(r) > 5 and r[5] is not None:
+                try:
+                    l = float(r[5])
+                except Exception:
+                    l = 0.0
+            results.append({
+                "ts": ts,
+                "temperature": t,
+                "humidity": h,
+                "soil": s,
+                "rain": rain_val,
+                "light": l
+            })
+        return jsonify({"readings": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.get("/predictions/history")
+def predictions_history():
+    try:
+        limit = int(request.args.get("limit", 20))
+        predictions = get_predictions(limit)
+        return jsonify({"predictions": predictions})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
