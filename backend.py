@@ -740,39 +740,73 @@ def sensors_config():
 @app.route("/sensors/update", methods=["POST"])
 def store_sensor_data():
     try:
+        print(f"DEBUG: Request method: {request.method}")
+        print(f"DEBUG: Content-Type: {request.headers.get('Content-Type')}")
+        print(f"DEBUG: Raw request data length: {len(request.get_data())}")
+
         data = None
-        # Try multiple ways to parse JSON for robustness on Render
+        # Try multiple ways to parse data for maximum robustness on Render
         try:
             data = request.get_json(force=True, silent=True)
+            print(f"DEBUG: get_json(force=True) succeeded: {data}")
         except Exception as e:
             print(f"DEBUG: get_json(force=True) failed: {e}")
 
         if data is None:
             try:
                 raw_text = request.get_data(as_text=True)
-                data = json.loads(raw_text)
+                print(f"DEBUG: Raw text: '{raw_text}'")
+                if raw_text:
+                    data = json.loads(raw_text)
+                    print(f"DEBUG: JSON loads from raw_text succeeded: {data}")
             except Exception as e:
                 print(f"DEBUG: get_data(as_text=True) failed: {e}")
 
         if data is None:
             try:
                 raw_bytes = request.get_data()
-                raw_text = raw_bytes.decode('utf-8')
-                data = json.loads(raw_text)
+                print(f"DEBUG: Raw bytes length: {len(raw_bytes)}")
+                if raw_bytes:
+                    raw_text = raw_bytes.decode('utf-8', errors='ignore')
+                    print(f"DEBUG: Decoded text: '{raw_text}'")
+                    data = json.loads(raw_text)
+                    print(f"DEBUG: JSON loads from decoded bytes succeeded: {data}")
             except Exception as e:
                 print(f"DEBUG: manual decode failed: {e}")
 
+        # Try form data as fallback
+        if data is None and request.form:
+            try:
+                data = {}
+                for key, value in request.form.items():
+                    if key in ['t', 'h', 's', 'r', 'l', 'temperature', 'humidity', 'soil', 'rain', 'light', 'ts']:
+                        data[key] = value
+                print(f"DEBUG: Form data parsed: {data}")
+            except Exception as e:
+                print(f"DEBUG: form data parsing failed: {e}")
+
         if not data:
-            print(f"DEBUG: /sensors/store received no data. Raw bytes: {request.get_data()[:200]}")
-            return jsonify({"error": "no_data", "received": str(request.get_data()[:200])}), 400
+            raw_content = request.get_data()[:500]
+            print(f"DEBUG: /sensors/store received no data. Raw content: {raw_content}")
+            return jsonify({"error": "no_data", "received": str(raw_content)}), 400
 
         print(f"DEBUG: /sensors/store received: {data}")
+        print(f"DEBUG: Data types - temperature: {type(data.get('temperature'))}, humidity: {type(data.get('humidity'))}, soil: {type(data.get('soil'))}")
+        print(f"DEBUG: Raw request data: {request.get_data()[:200]}")
 
-        t = float(data.get("t") or data.get("temperature") or 0.0)
-        h = float(data.get("h") or data.get("humidity") or 0.0)
-        s = int(data.get("s") or data.get("soil") or 0)
-        r = int(data.get("r") or data.get("rain") or 4095)
-        l = float(data.get("l") or data.get("light") or 0.0)
+        # Validate required fields exist (but allow zero values)
+        required_fields = ["temperature", "humidity", "soil", "rain", "light"]
+        for field in required_fields:
+            if field not in data:
+                print(f"DEBUG: Missing field: {field}")
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+
+        # Extract values (allow zeros)
+        t = float(data.get("temperature", 0.0))
+        h = float(data.get("humidity", 0.0))
+        s = int(data.get("soil", 0))
+        r = int(data.get("rain", 4095))
+        l = float(data.get("light", 0.0))
         ts = int(data.get("ts") or time.time())
 
         conn = get_db()
