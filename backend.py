@@ -910,10 +910,7 @@ def status():
 
 @app.get("/ping")
 def ping():
-    try:
-        return jsonify({"ok": True})
-    except Exception:
-        return jsonify({"ok": False}), 500
+    return jsonify({"status": "ok", "time": int(time.time()), "ok": True})
 
 @app.post("/predict")
 def predict():
@@ -1285,9 +1282,6 @@ def predictions_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.get("/ping")
-def ping():
-    return jsonify({"status": "ok", "time": int(time.time())})
 
 if __name__ == "__main__":
     start_serial_reader()
