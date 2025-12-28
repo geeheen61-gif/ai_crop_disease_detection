@@ -205,7 +205,17 @@ def get_predictions(limit=20):
         (limit,)
     )
     rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    return [
+        {
+            "id": r['id'],
+            "ts": r['ts'],
+            "image_url": r['image_url'],
+            "disease": r['disease_name'], # Corrected mapping for Flutter
+            "confidence": r['confidence'],
+            "guidance": r['guidance']
+        }
+        for r in rows
+    ]
 
 def latest_reading():
     """Retrieves the most recent sensor reading from the database."""
