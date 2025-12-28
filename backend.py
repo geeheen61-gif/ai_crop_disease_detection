@@ -92,31 +92,56 @@ LATEST_SENSOR_READING_LOCK = threading.Lock()
 LATEST_IMAGE = None
 LATEST_IMAGE_LOCK = threading.Lock()
 
-def ensure_db():
-    global DB
-    if DB is None:
-        DB = sqlite3.connect(SENSORS_DB_PATH, check_same_thread=False)
+from flask import g
+
+def get_db():
+    """Provides a thread-safe database connection for the current request context."""
+    if 'db' not in g:
+        g.db = sqlite3.connect(SENSORS_DB_PATH, check_same_thread=False)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+@app.teardown_appcontext
+def close_db(error):
+    """Closes the database connection at the end of each request."""
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    """Initializes the database schema if it doesn't exist."""
+    with app.app_context():
+        conn = sqlite3.connect(SENSORS_DB_PATH)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sensor_readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                ts INTEGER, 
+                temperature REAL, 
+                humidity REAL, 
+                soil INTEGER, 
+                rain INTEGER, 
+                light REAL
+            )
+        """)
+        # Ensure 'light' column exists in older schemas
         try:
-            DB.execute("PRAGMA journal_mode=WAL")
+            conn.execute("ALTER TABLE sensor_readings ADD COLUMN light REAL")
         except Exception:
             pass
-        DB.execute("CREATE TABLE IF NOT EXISTS sensor_readings (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, temperature REAL, humidity REAL, soil INTEGER, rain INTEGER, light REAL)")
-        try:
-            DB.execute("ALTER TABLE sensor_readings ADD COLUMN light REAL")
-        except Exception:
-            pass
-        DB.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
-        DB.execute("CREATE TABLE IF NOT EXISTS predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, image_url TEXT, disease_name TEXT, confidence REAL, guidance TEXT)")
-        DB.commit()
-    return DB
+        conn.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, image_url TEXT, disease_name TEXT, confidence REAL, guidance TEXT)")
+        conn.commit()
+        conn.close()
+        print(f"Database initialized at {SENSORS_DB_PATH}")
 
 def set_config(key, value):
-    conn = ensure_db()
+    conn = get_db()
     conn.execute("INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(key), str(value)))
     conn.commit()
 
 def get_config(key, default=""):
-    conn = ensure_db()
+    conn = get_db()
     cur = conn.execute("SELECT value FROM config WHERE key=?", (str(key),))
     row = cur.fetchone()
     return (row[0] if row else default)
@@ -163,46 +188,33 @@ def latest_cloudinary_image_url():
 
 def store_prediction(image_url, disease_name, confidence, guidance=""):
     try:
-        print(f"DEBUG: Storing prediction - Disease: {disease_name}, Confidence: {confidence}")
-        conn = ensure_db()
         ts = int(time.time())
+        conn = get_db()
         conn.execute(
             "INSERT INTO predictions(ts, image_url, disease_name, confidence, guidance) VALUES(?, ?, ?, ?, ?)",
             (ts, image_url, disease_name, confidence, guidance)
         )
         conn.commit()
-        print(f"DEBUG: Prediction stored successfully at TS={ts}")
     except Exception as e:
-        print(f"DEBUG: Error in store_prediction: {e}")
+        print(f"Error storing prediction: {e}")
 
 def get_predictions(limit=20):
-    conn = ensure_db()
+    conn = get_db()
     cur = conn.execute(
         "SELECT id, ts, image_url, disease_name, confidence, guidance FROM predictions ORDER BY ts DESC LIMIT ?",
         (limit,)
     )
     rows = cur.fetchall()
-    return [
-        {
-            "id": r[0],
-            "ts": r[1],
-            "image_url": r[2],
-            "disease": r[3],
-            "confidence": r[4],
-            "guidance": r[5]
-        }
-        for r in rows
-    ]
+    return [dict(r) for r in rows]
 
 def latest_reading():
     """Retrieves the most recent sensor reading from the database."""
     try:
-        conn = ensure_db()
+        conn = get_db()
         cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT 1")
         row = cur.fetchone()
         
         if not row:
-            # Return default empty structure instead of None to prevent 404 errors
             return {
                 "ts": int(time.time()),
                 "temperature": 0.0,
@@ -214,12 +226,12 @@ def latest_reading():
             }
             
         return {
-            "ts": int(row[0]),
-            "temperature": float(row[1] or 0.0),
-            "humidity": float(row[2] or 0.0),
-            "soil": int(row[3] or 0),
-            "rain": int(row[4] if row[4] is not None else 4095),
-            "light": float(row[5] or 0.0)
+            "ts": int(row['ts']),
+            "temperature": float(row['temperature'] or 0.0),
+            "humidity": float(row['humidity'] or 0.0),
+            "soil": int(row['soil'] or 0),
+            "rain": int(row['rain'] if row['rain'] is not None else 4095),
+            "light": float(row['light'] or 0.0)
         }
     except Exception as e:
         print(f"Error fetching latest reading: {e}")
@@ -270,30 +282,32 @@ def read_serial_loop(port_name):
             raw = ser.readline()
             if not raw:
                 continue
-            line = None
-            try:
-                line = raw.decode(errors="ignore").strip()
-            except Exception:
-                continue
+            line = raw.decode(errors="ignore").strip()
             rd = parse_serial_text(line)
             if rd:
-                conn = ensure_db()
-                ts = int(time.time())
-                rain_raw = 0 if rd["rain"] else 4095
-                conn.execute(
-                    "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
-                    (ts, float(rd["temperature"]), float(rd["humidity"]), int(rd["soil"]), int(rain_raw), 0.0),
-                )
-                conn.commit()
+                # Inside thread, we use a dedicated connection
+                with sqlite3.connect(SENSORS_DB_PATH) as conn:
+                    ts = int(time.time())
+                    rain_raw = 0 if rd["rain"] else 4095
+                    conn.execute(
+                        "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
+                        (ts, float(rd["temperature"]), float(rd["humidity"]), int(rd["soil"]), int(rain_raw), 0.0),
+                    )
+                    conn.commit()
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1)
 
 def start_serial_reader():
+    # Only run serial reader if physically on a machine (Local)
+    # Render environment specifically sets the RENDER variable
+    if os.environ.get("RENDER"):
+         return # Skip on Render
     try:
         p = find_serial_port()
         if p:
             t = threading.Thread(target=read_serial_loop, args=(p,), daemon=True)
             t.start()
+            print(f"Serial reader started on {p}")
     except Exception:
         pass
 
@@ -667,29 +681,25 @@ def guidance_text(category, top3_classes, api_key, language="en"):
         return guide_map.get(category, default_msg)
 
 try_load_class_names()
-ensure_db()
+init_db()
 
 
 
 @app.route("/sensors/latest", methods=["GET"])
 def sensors_latest():
-    """
-    Returns the latest sensor data. 
-    Improved to always return a 200 status with dummy data if no readings exist,
-    preventing 404 console errors in the Flutter app.
-    """
+    """Returns the latest sensor data, preferring database for consistency across workers."""
     try:
-        # 1. Check in-memory cache first
+        # 1. Try Database first (consistent across multi-worker setups)
+        lr = latest_reading()
+        if lr and not lr.get("is_default"):
+            return jsonify(lr), 200
+            
+        # 2. Check in-memory cache as fallback
         with LATEST_SENSOR_READING_LOCK:
             if LATEST_SENSOR_READING:
                 return jsonify(LATEST_SENSOR_READING), 200
         
-        # 2. Check Database
-        lr = latest_reading()
-        if lr:
-            return jsonify(lr), 200
-            
-        # 3. Last fallback: return empty reading (no 404)
+        # 3. Last fallback: return dummy data (prevents 404)
         ts = int(time.time())
         return jsonify({
             "ts": ts,
@@ -698,10 +708,11 @@ def sensors_latest():
             "soil": 0,
             "rain": 4095,
             "light": 0.0,
-            "message": "Waiting for sensor data"
+            "message": "Waiting for sensor data",
+            "is_default": True
         }), 200
     except Exception as e:
-        print(f"DEBUG: sensors_latest error: {e}")
+        print(f"Error in sensors_latest: {e}")
         return jsonify({"error": "internal_error", "details": str(e)}), 500
 
 @app.route("/sensors/config", methods=["GET"])
@@ -739,7 +750,7 @@ def store_sensor_data():
         l = float(data.get("l") or data.get("light") or 0.0)
         ts = int(data.get("ts") or time.time())
 
-        conn = ensure_db()
+        conn = get_db()
         conn.execute(
             "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
             (ts, t, h, s, r, l)
@@ -785,7 +796,7 @@ def sensors_push():
                 "light": l
             })
         
-        conn = ensure_db()
+        conn = get_db()
         conn.execute(
             "INSERT INTO sensor_readings(ts, temperature, humidity, soil, rain, light) VALUES(?, ?, ?, ?, ?, ?)",
             (ts, t, h, s, r, l),
@@ -1182,7 +1193,7 @@ def latest_alias():
 def sensors_history_endpoint():
     try:
         limit = int(request.args.get("limit", 50))
-        conn = ensure_db()
+        conn = get_db()
         cur = conn.execute(
             "SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT ?",
             (limit,)
@@ -1190,24 +1201,13 @@ def sensors_history_endpoint():
         rows = cur.fetchall()
         results = []
         for r in rows:
-            ts = int(r[0])
-            t = float(r[1] or 0.0)
-            h = float(r[2] or 0.0)
-            s = int(r[3] or 0)
-            rain_val = int(r[4] if r[4] is not None else 4095)
-            l = 0.0
-            if len(r) > 5 and r[5] is not None:
-                try:
-                    l = float(r[5])
-                except Exception:
-                    l = 0.0
             results.append({
-                "ts": ts,
-                "temperature": t,
-                "humidity": h,
-                "soil": s,
-                "rain": rain_val,
-                "light": l
+                "ts": int(r['ts']),
+                "temperature": float(r['temperature'] or 0.0),
+                "humidity": float(r['humidity'] or 0.0),
+                "soil": int(r['soil'] or 0),
+                "rain": int(r['rain'] if r['rain'] is not None else 4095),
+                "light": float(r['light'] if len(r) > 5 else 0.0)
             })
         return jsonify({"readings": results})
     except Exception as e:
