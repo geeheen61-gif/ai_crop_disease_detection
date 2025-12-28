@@ -1284,5 +1284,16 @@ def predictions_history():
 
 
 if __name__ == "__main__":
+    # This block only runs when you execute 'python backend.py' locally.
+    # On Render, gunicorn is used and this block is ignored.
+    
+    # 1. Start Serial Reader for local USB-connected sensors
+    print("--- [LOCAL] Starting Serial Reader Check ---")
     start_serial_reader()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    
+    # 2. Determine port (Render uses $PORT, local uses 5000)
+    port = int(os.environ.get("PORT", 5000))
+    
+    # 3. Start Flask dev server
+    print(f"--- [LOCAL] Starting Development Server on http://0.0.0.0:{port} ---")
+    app.run(host="0.0.0.0", port=port, debug=True)
