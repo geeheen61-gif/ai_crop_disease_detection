@@ -174,13 +174,17 @@ def cleanup_old_cloud_images():
 
 def upload_to_cloudinary(file_path):
     if not HAS_CLOUDINARY:
-        return None
+        print("DEBUG: Cloudinary NOT configured")
+        return None, "Cloudinary not configured"
     try:
         cleanup_old_cloud_images() # Clean before upload to maintain limit
+        print(f"DEBUG: Uploading {file_path} to Cloudinary...")
         result = cloudinary.uploader.upload(file_path, resource_type="auto")
-        return result.get('secure_url')
-    except Exception:
-        return None
+        print(f"DEBUG: Upload success: {result}")
+        return result.get('secure_url'), None
+    except Exception as e:
+        print(f"DEBUG: Cloudinary Exception: {e}")
+        return None, str(e)
 
 def latest_cloudinary_image_url():
     if not HAS_CLOUDINARY:
@@ -1235,7 +1239,20 @@ def camera_upload():
         cleanup_old_cloud_images()
 
         # 3. Upload to Cloudinary
-        url = upload_to_cloudinary(filepath)
+        # If Cloudinary is disabled or fails, we might get None
+        upload_result = upload_to_cloudinary(filepath)
+        
+        # Robustly handle the tuple return (url, error) or potentially old single value
+        if isinstance(upload_result, tuple):
+             url, error_msg = upload_result
+        else:
+             # Fallback if someone reverts the function signature
+             url = upload_result
+             error_msg = "Unknown error"
+             
+        # Debug output
+        print(f"DEBUG: upload_result type: {type(upload_result)}")
+        print(f"DEBUG: upload_result value: {upload_result}")
         
         # 4. Cleanup local file
         if filepath and os.path.exists(filepath):
@@ -1245,7 +1262,8 @@ def camera_upload():
                 pass
             
         if not url:
-            return jsonify({"error": "cloud_upload_failed"}), 500
+            print(f"DEBUG: Cloud upload failed: {error_msg}")
+            return jsonify({"error": "cloud_upload_failed", "details": error_msg}), 500
             
         # 5. Update In-Memory Cache (using new config system)
         set_config("permanent_latest_cam_url", url)
