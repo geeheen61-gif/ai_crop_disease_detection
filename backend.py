@@ -11,6 +11,12 @@ import urllib3
 from flask import Flask, jsonify, request, Response, send_from_directory
 from flask_cors import CORS
 import requests
+try:
+    from twilio.twiml.messaging_response import MessagingResponse
+    from twilio.rest import Client
+    HAS_TWILIO = True
+except ImportError:
+    HAS_TWILIO = False
 
 try:
     from dotenv import load_dotenv
@@ -1407,6 +1413,46 @@ def predictions_history():
         return jsonify({"predictions": predictions})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/bot", methods=["POST"])
+def bot():
+    """Twilio Webhook to handle incoming WhatsApp messages"""
+    if not HAS_TWILIO:
+        return "Twilio library not found", 500
+
+    incoming_msg = request.values.get('Body', '').lower()
+    resp = MessagingResponse()
+    msg = resp.message()
+
+    # Check if user wants readings
+    if 'reading' in incoming_msg or 'status' in incoming_msg or 'data' in incoming_msg:
+        data = latest_reading()
+        if data:
+            # Format the reading
+            t = data.get('temperature', 0)
+            h = data.get('humidity', 0)
+            s = data.get('soil', 0)
+            r = data.get('rain', 0)
+            l = data.get('light', 0)
+            ts_val = data.get('ts', time.time())
+            ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts_val))
+
+            reply_text = (
+                f"🌱 *Current Crop Status* 🌱\n"
+                f"📅 {ts_str}\n"
+                f"🌡 Temp: {t:.1f}°C\n"
+                f"💧 Humidity: {h:.1f}%\n"
+                f"🌱 Soil: {s}\n"
+                f"🌧 Rain: {r}\n"
+                f"💡 Light: {l:.1f}"
+            )
+        else:
+            reply_text = "⚠️ No sensor data available yet."
+    else:
+        reply_text = "🤖 Hello! Send 'reading' to get the latest crop sensor data."
+
+    msg.body(reply_text)
+    return str(resp)
 
 
 if __name__ == "__main__":
