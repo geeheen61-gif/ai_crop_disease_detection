@@ -40,6 +40,14 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_u
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MAX_CLOUD_IMAGES = int(os.getenv("MAX_CLOUD_IMAGES", "1"))
 
+# ================= FIREBASE CONFIG =================
+# If you want the backend to fetch from Firebase:
+FIREBASE_URL = os.getenv("FIREBASE_URL", "https://new-project-27194-default-rtdb.firebaseio.com/").strip()
+if not FIREBASE_URL.endswith("/"):
+    FIREBASE_URL += "/"
+    
+FIREBASE_SECRET = os.getenv("FIREBASE_SECRET", "eJHy9zTaXLAz45MLCfJL2Ufae8XdUUYEU20ZNGsp").strip()
+
 if HAS_CLOUDINARY:
     try:
         cloudinary.config(
@@ -230,8 +238,61 @@ def get_predictions(limit=20):
         for r in rows
     ]
 
+def fetch_firebase_latest():
+    """Fetches the most recent sensor reading from Firebase."""
+    try:
+        if not FIREBASE_URL or "firebaseio.com" not in FIREBASE_URL:
+            return None
+            
+        # Firebase REST API to get the last entry
+        # orderBy="$key"&limitToLast=1 gives the most recently added node (time-based keys)
+        url = f"{FIREBASE_URL}sensors.json?orderBy=\"$key\"&limitToLast=1"
+        if FIREBASE_SECRET:
+            url += f"&auth={FIREBASE_SECRET}"
+            
+        # print(f"DEBUG: Fetching from Firebase: {url}")
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and isinstance(data, dict):
+                # result is {"-Key": {data...}}
+                key = list(data.keys())[0]
+                val = data[key]
+                
+                # Handle timestamp: Firebase sends ms, we usually want sec
+                ts = val.get("ts", 0)
+                if isinstance(ts, dict): # .sv: timestamp placeholder?
+                    ts = int(time.time())
+                elif ts > 1000000000000: # It's in ms
+                    ts = int(ts / 1000)
+                
+                return {
+                    "ts": ts,
+                    "temperature": float(val.get("temperature", 0.0)),
+                    "humidity": float(val.get("humidity", 0.0)),
+                    "soil": int(val.get("soil", 0)),
+                    "rain": int(val.get("rain", 4095)),
+                    "light": float(val.get("light", 0.0))
+                }
+    except Exception as e:
+        print(f"Firebase fetch error: {e}")
+    return None
+
 def latest_reading():
-    """Retrieves the most recent sensor reading from the database."""
+    """Retrieves the most recent sensor reading from Firebase (preferred) or database."""
+    # 1. Try Firebase first
+    fb_data = fetch_firebase_latest()
+    if fb_data:
+        # Optional: Cache it to local DB for history/redundancy
+        try:
+             # Check if we already have this ts to avoid dupes? 
+             # For now, just return it. The frontend polls this.
+             pass
+        except:
+             pass
+        return fb_data
+
+    # 2. Fallback to local DB
     try:
         conn = get_db()
         cur = conn.execute("SELECT ts, temperature, humidity, soil, rain, light FROM sensor_readings ORDER BY ts DESC LIMIT 1")
@@ -1042,9 +1103,28 @@ def predict():
         if include_guidance:
             guide = guidance_text(cat_top, top3, api_key, language)
         
-        # We no longer upload phone/gallery images to Cloudinary for predictions
-        # to save space and respect the user's request. 
-        # Only existing image_urls (like from ESP32-CAM) will be preserved in history.
+        # If we have a file but no image_url, try to upload to Cloudinary so history works
+        if not image_url and HAS_CLOUDINARY and content:
+            try:
+                # Save to temp file
+                temp_filename = f"pred_{int(time.time())}_{os.urandom(4).hex()}.jpg"
+                temp_path = os.path.join(UPLOAD_FOLDER, temp_filename)
+                with open(temp_path, "wb") as f:
+                    f.write(content)
+                
+                # Upload
+                c_url, c_err = upload_to_cloudinary(temp_path)
+                if c_url:
+                    image_url = c_url
+                    print(f"DEBUG: Uploaded prediction image to {image_url}")
+                
+                # Cleanup
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"DEBUG: Failed to upload prediction image: {e}")
 
         # Always store the prediction for history
         try:
