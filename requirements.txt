@@ -10,3 +10,4 @@ cloudinary==1.38.0
 tensorflow==2.20.0
 protobuf>=5.28.0
 paho-mqtt>=2.1.0
+twilio
