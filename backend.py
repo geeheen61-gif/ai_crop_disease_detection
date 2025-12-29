@@ -27,6 +27,7 @@ except Exception:
     HAS_CLOUDINARY = False
 
 app = Flask(__name__)
+app.url_map.strict_slashes = False # Allow trailing slashes (e.g. /store and /store/ are same)
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["Content-Type", "Authorization"]}})
 
 # Disable InsecureRequestWarning for development when verify=False is used
@@ -703,6 +704,8 @@ init_db()
 
 
 
+
+
 @app.route("/sensors/latest", methods=["GET"])
 def sensors_latest():
     """Returns the latest sensor data, preferring database for consistency across workers."""
@@ -1181,44 +1184,68 @@ def camera_latest():
 @app.route("/camera/upload", methods=["POST"])
 def camera_upload():
     try:
-        print("DEBUG: Received camera upload request")
+        print(f"DEBUG: /camera/upload received. Content-Type: {request.content_type}")
         if not HAS_CLOUDINARY:
-            print("ERROR: Cloudinary not configured")
             return jsonify({"error": "cloudinary_not_configured"}), 501
+            
+        filepath = None
         
-        content = request.data
-        if not content:
-            print("ERROR: No content in camera upload")
-            return jsonify({"error": "no_content"}), 400
+        # 1. Handle raw binary upload (ESP32 style)
+        if request.content_type and ('image/jpeg' in request.content_type or 'image/jpg' in request.content_type):
+            data = request.get_data()
+            if not data:
+                return jsonify({"error": "no_data"}), 400
+            
+            filename = f"cam_{int(time.time())}.jpg"
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            with open(filepath, "wb") as f:
+                f.write(data)
+                
+        # 2. Handle multipart form upload (Standard style)
+        elif 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({"error": "no_filename"}), 400
+            filename = f"cam_{int(time.time())}.jpg"
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
+            
+        else:
+            print(f"DEBUG: Unsupported Media Type: {request.content_type}")
+            # Fallback: Try reading raw data anyway if content length > 0
+            if request.content_length and request.content_length > 0:
+                 data = request.get_data()
+                 filename = f"cam_{int(time.time())}.jpg"
+                 filepath = os.path.join(UPLOAD_FOLDER, filename)
+                 with open(filepath, "wb") as f:
+                     f.write(data)
+            else:
+                 return jsonify({"error": "unsupported_media_type", "type": str(request.content_type)}), 415
 
         cleanup_old_cloud_images()
 
-        filename = f"cam_{int(time.time())}.jpg"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        with open(filepath, "wb") as f:
-            f.write(content)
-            
-        print(f"Uploading file: {filepath}")
+        # 3. Upload to Cloudinary
         url = upload_to_cloudinary(filepath)
-        print(f"Upload result: {url}")
         
-        # Cleanup local
-        try:
-            os.remove(filepath)
-        except:
-            pass
+        # 4. Cleanup local file
+        if filepath and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except:
+                pass
             
-        if url:
-            # IMPORTANT: Store under a specific key that only CAM uploads touch
-            set_config("permanent_latest_cam_url", url)
-            set_config("latest_image_url", url)
-            print(f"DEBUG: Persistent camera URL updated: {url}")
-            return jsonify({"ok": True, "url": url}), 200
-        else:
-            return jsonify({"error": "upload_failed"}), 500
+        if not url:
+            return jsonify({"error": "cloud_upload_failed"}), 500
             
+        # 5. Update In-Memory Cache (using new config system)
+        set_config("permanent_latest_cam_url", url)
+        set_config("latest_image_url", url)
+        print(f"DEBUG: Persistent camera URL updated: {url}")
+            
+        return jsonify({"ok": True, "url": url}), 200
+        
     except Exception as e:
+        print(f"Error in camera_upload: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/upload", methods=["POST"])
@@ -1273,14 +1300,6 @@ def predictions_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    # Use PORT env var for compatibility with platforms like Render
-    port = int(os.getenv("PORT", "5000"))
-    ssl_cert = os.getenv("SSL_CERT_PATH", "").strip()
-    ssl_key = os.getenv("SSL_KEY_PATH", "").strip()
-    if ssl_cert and ssl_key and os.path.exists(ssl_cert) and os.path.exists(ssl_key):
-        print(f"--- Starting HTTPS server on https://0.0.0.0:{port} using {ssl_cert} and {ssl_key} ---")
-        app.run(host="0.0.0.0", port=port, ssl_context=(ssl_cert, ssl_key))
-    else:
-        print(f"--- Starting HTTP server on http://0.0.0.0:{port} ---")
-        app.run(host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+  app.run(host="0.0.0.0", port=5000)
