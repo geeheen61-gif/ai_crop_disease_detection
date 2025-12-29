@@ -1169,8 +1169,18 @@ def camera_latest():
         latest_img = str(get_config("permanent_latest_cam_url", "") or "").strip()
         
         if not latest_img:
-            # Fallback to the generic latest if permanent is not set yet
+            # Fallback 1: Generic latest config
             latest_img = str(get_config("latest_image_url", "") or "").strip()
+            
+        if not latest_img:
+             # Fallback 2: Check Cloudinary API directly (if DB is empty/wiped)
+             print("DEBUG: No DB image, checking Cloudinary API...")
+             latest_img = latest_cloudinary_image_url()
+             
+        if latest_img:
+             # If we found it in Cloudinary but not DB, restore it to DB for next time
+             set_config("permanent_latest_cam_url", latest_img)
+             set_config("latest_image_url", latest_img)
 
         return jsonify({
             "stream_url": cam_url,
