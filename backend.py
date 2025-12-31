@@ -52,14 +52,20 @@ FIREBASE_URL = os.getenv("FIREBASE_URL", "https://new-project-27194-default-rtdb
 if not FIREBASE_URL.endswith("/"):
     FIREBASE_URL += "/"
     
-FIREBASE_SECRET = os.getenv("FIREBASE_SECRET", "eJHy9zTaXLAz45MLCfJL2Ufae8XdUUYEU20ZNGsp").strip()
+FIREBASE_SECRET = os.getenv("FIREBASE_SECRET", "").strip()
+
+# ================= TWILIO CONFIG =================
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
+USER_PHONE_NUMBER = os.getenv("USER_PHONE_NUMBER", "")
 
 if HAS_CLOUDINARY:
     try:
         cloudinary.config(
-            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "dbtgh0xij"),
-            api_key=os.getenv("CLOUDINARY_API_KEY", "827787627737112"),
-            api_secret=os.getenv("CLOUDINARY_API_SECRET", "PtxKvOaoTKlkqW_afTaxDTcm1Uo")
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", ""),
+            api_key=os.getenv("CLOUDINARY_API_KEY", ""),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET", "")
         )
     except Exception:
         pass
@@ -327,6 +333,59 @@ def latest_reading():
         print(f"Error fetching latest reading: {e}")
         return None
 
+def send_sms_notification(body):
+    """Sends an SMS using Twilio."""
+    if not HAS_TWILIO:
+        print("DEBUG: Twilio not installed, cannot send SMS")
+        return False
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            body=body,
+            from_=TWILIO_FROM_NUMBER,
+            to=USER_PHONE_NUMBER
+        )
+        print(f"DEBUG: SMS sent successfully, SID: {message.sid}")
+        return True
+    except Exception as e:
+        print(f"DEBUG: Failed to send SMS: {e}")
+        return False
+
+def check_sensors_and_notify_loop():
+    """Background loop to check sensors and send notifications every 3 hours if needed."""
+    print("DEBUG: Sensor notification loop started")
+    while True:
+        try:
+            # We need an app context for get_db() and get_config()
+            with app.app_context():
+                reading = latest_reading()
+                if reading and not reading.get("is_default"):
+                    soil = reading.get("soil", 0)
+                    rain = reading.get("rain", 4095)
+                    
+                    # Conditions: Soil moisture > 2800 OR Rain sensor value is low (e.g. < 500)
+                    if soil > 2800 or rain < 500:
+                        last_sent = float(get_config("last_sms_sent_ts", 0))
+                        now = time.time()
+                        
+                        # 3 hours gap (10800 seconds)
+                        if now - last_sent > 10800:
+                            msg = f"⚠️ Alert: Unusual sensor values detected!\n"
+                            if soil > 2800:
+                                msg += f"- Soil Moisture: {soil} (High)\n"
+                            if rain < 500:
+                                msg += f"- Rain detected (Value: {rain})\n"
+                            msg += f"Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}"
+                            
+                            if send_sms_notification(msg):
+                                set_config("last_sms_sent_ts", now)
+            
+        except Exception as e:
+            print(f"DEBUG: Error in sensor notification loop: {e}")
+        
+        # Check every 5 minutes
+        time.sleep(300)
+
 
 
 def parse_serial_text(txt):
@@ -400,6 +459,15 @@ def start_serial_reader():
             print(f"Serial reader started on {p}")
     except Exception:
         pass
+
+def start_sensor_notifier():
+    """Starts the background thread for sensor notifications."""
+    t = threading.Thread(target=check_sensors_and_notify_loop, daemon=True)
+    t.start()
+    print("Sensor notifier thread started")
+
+start_serial_reader()
+start_sensor_notifier()
 
 CATEGORY_OF = {
     'Apple___Apple_scab': 'Leaf Spot',
