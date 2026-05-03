@@ -466,7 +466,7 @@ def classify_image_with_gemini(content, api_key, language="en"):
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
-        model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings) 
+        model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings) 
         
         # Prepare the image for Gemini
         image_parts = [
@@ -530,7 +530,7 @@ def guidance_text(category, top3_classes, api_key, language="en"):
         return default_msg
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         lang_name = "Urdu" if language == "ur" else "English"
         prompt = (
             f"You are an agronomy assistant. The image was identified as '{category}'. "
@@ -901,7 +901,7 @@ def chat():
         
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
             preface = ""
             category = data.get("category")
@@ -941,7 +941,7 @@ def translate():
             return jsonify({"translated": text}), 200
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             lang = "Urdu" if target == "ur" else "English"
             resp = model.generate_content(f"Translate to {lang}. Only translation:\n\n{text}")
             txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
