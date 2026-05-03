@@ -607,7 +607,7 @@ def guidance_text(category, top3_classes, api_key, language="en"):
     except Exception as e:
         return guide_map.get(category, default_msg)
 
-try_load_class_names()
+
 init_db()
 
 
