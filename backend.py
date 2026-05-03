@@ -71,18 +71,9 @@ if HAS_CLOUDINARY:
         pass
 
 HAS_ML = False
-np = None
-Image = None
 
-try:
-    import numpy as np
-except Exception:
-    pass
 
-try:
-    from PIL import Image
-except Exception:
-    pass
+
 
 try:
     import google.generativeai as genai
@@ -459,62 +450,7 @@ def start_sensor_notifier():
 start_serial_reader()
 start_sensor_notifier()
 
-CATEGORY_OF = {
-    'Apple___Apple_scab': 'Leaf Spot',
-    'Apple___Black_rot': 'Blight',
-    'Apple___Cedar_apple_rust': 'Rust',
-    'Apple___healthy': 'Healthy',
-    'Blueberry___healthy': 'Healthy',
-    'Cherry___healthy': 'Healthy',
-    'Cherry___Powdery_mildew': 'Blight',
-    'Corn___Cercospora_leaf_spot Gray_leaf_spot': 'Leaf Spot',
-    'Corn___Common_rust': 'Rust',
-    'Corn___healthy': 'Healthy',
-    'Corn___Northern_Leaf_Blight': 'Blight',
-    'Grape___Black_rot': 'Blight',
-    'Grape___Esca_(Black_Measles)': 'Blight',
-    'Grape___healthy': 'Healthy',
-    'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)': 'Leaf Spot',
-    'Orange___Haunglongbing_(Citrus_greening)': 'Nutrient deficiency',
-    'Peach___Bacterial_spot': 'Leaf Spot',
-    'Peach___healthy': 'Healthy',
-    'Pepper,_bell___Bacterial_spot': 'Leaf Spot',
-    'Pepper,_bell___healthy': 'Healthy',
-    'Potato___Early_blight': 'Blight',
-    'Potato___healthy': 'Healthy',
-    'Potato___Late_blight': 'Blight',
-    'Raspberry___healthy': 'Healthy',
-    'Soybean___healthy': 'Healthy',
-    'Squash___Powdery_mildew': 'Blight',
-    'Strawberry___healthy': 'Healthy',
-    'Strawberry___Leaf_scorch': 'Blight',
-    'Tomato___Bacterial_spot': 'Leaf Spot',
-    'Tomato___Early_blight': 'Blight',
-    'Tomato___healthy': 'Healthy',
-    'Tomato___Late_blight': 'Blight',
-    'Tomato___Leaf_Mold': 'Blight',
-    'Tomato___Septoria_leaf_spot': 'Leaf Spot',
-    'Tomato___Spider_mites Two-spotted_spider_mite': 'Blight',
-    'Tomato___Target_Spot': 'Leaf Spot',
-    'Tomato___Tomato_mosaic_virus': 'Blight',
-    'Tomato___Tomato_Yellow_Leaf_Curl_Virus': 'Blight',
-}
 
-CATEGORY_GUIDE = {
-    'Leaf Spot': "Remove infected leaves; improve airflow; avoid overhead watering; apply copper or chlorothalonil per label; sanitize tools; rotate crops.",
-    'Blight': "Prune infected tissue; dispose, do not compost; avoid wet foliage; apply approved fungicide; use resistant varieties; rotate crops.",
-    'Rust': "Remove rusted leaves; increase spacing; water at soil level; apply sulfur or copper per label; remove alternate hosts.",
-    'Nutrient deficiency': "Add balanced NPK; use compost; ensure soil pH ~6–7; avoid overwatering; apply micronutrients if leaf veins stay green.",
-    'Healthy': "Maintain spacing; water at roots; mulch; monitor weekly; keep tools clean; balanced fertilization."
-}
-
-CATEGORY_GUIDE_UR = {
-    'Leaf Spot': "متاثرہ پتوں کو ہٹا دیں؛ ہوا کی آمد و رفت بہتر بنائیں؛ اوپر سے پانی دینے سے گریز کریں؛ کاپر یا کلوروتھالونیل کا استعمال کریں؛ اوزار صاف کریں؛ فصلوں کو باری باری کاشت کریں۔",
-    'Blight': "متاثرہ حصے کو کاٹ دیں؛ تلف کریں، کھاد نہ بنائیں؛ پتوں کو گیلا ہونے سے بچائیں؛ منظور شدہ پھپھوندی کش دوا استعمال کریں؛ مزاحم اقسام استعمال کریں؛ فصلوں کو باری باری کاشت کریں۔",
-    'Rust': "زنگ آلود پتے ہٹا دیں؛ پودوں کے درمیان فاصلہ بڑھائیں؛ جڑوں میں پانی دیں؛ سلفر یا کاپر کا استعمال کریں؛ متبادل میزبان پودوں کو ہٹا دیں۔",
-    'Nutrient deficiency': "متوازن NPK کھاد ڈالیں؛ نامیاتی کھاد استعمال کریں؛ مٹی کا pH 6-7 رکھیں؛ زیادہ پانی دینے سے گریز کریں؛ اگر پتوں کی رگیں سبز رہیں تو مائیکرو نیوٹرینٹس ڈالیں۔",
-    'Healthy': "فاصلہ برقرار رکھیں؛ جڑوں میں پانی دیں؛ ملچنگ کریں؛ ہفتہ وار نگرانی کریں؛ اوزار صاف رکھیں؛ متوازن کھاد دیں۔"
-}
 
 def classify_image_with_gemini(content, api_key, language="en"):
     """Uses Gemini Vision API to detect plant disease from image content."""
@@ -523,7 +459,14 @@ def classify_image_with_gemini(content, api_key, language="en"):
     
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash') # Using 1.5 flash for vision
+        # Safety settings to avoid blocking common leaf images
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings) 
         
         # Prepare the image for Gemini
         image_parts = [
@@ -538,26 +481,29 @@ def classify_image_with_gemini(content, api_key, language="en"):
             f"Act as an expert agronomist. Analyze this plant leaf image and provide a JSON response with the following fields: "
             f"1) 'is_plant' (boolean): whether the image is a plant leaf, "
             f"2) 'disease_name' (string): the specific disease or 'Healthy', "
-            f"3) 'category' (string): one of 'Leaf Spot', 'Blight', 'Rust', 'Nutrient deficiency', 'Healthy', "
+            f"3) 'category' (string): a general category (e.g., Fungal, Bacterial, Viral, Nutrient, Healthy), "
             f"4) 'confidence' (float): 0 to 1, "
-            f"5) 'guidance' (string): a concise summary in {lang_name} covering symptoms, treatment, and prevention. "
+            f"5) 'guidance' (string): a detailed, expert treatment and prevention guide in {lang_name}. "
             f"Provide ONLY the raw JSON object."
         )
         
         response = model.generate_content([prompt, image_parts[0]])
         
-        # Extract JSON from response
+        # Extract JSON from response using regex for better robustness
         text = response.text.strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-            
+        print(f"DEBUG: Gemini Raw Response: {text}")
+        
+        # Try to find JSON block
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            text = json_match.group(0)
+        
         data = json.loads(text)
         return data
     except Exception as e:
-        print(f"Gemini detection error: {e}")
-        return None
+        print(f"Gemini detection error: {str(e)}")
+        # Return the error string so it can be reported
+        return {"error": str(e)}
 
 # Custom classification code removed in favor of Gemini API as per request.
 
@@ -577,21 +523,18 @@ def language_name(code):
 
 def guidance_text(category, top3_classes, api_key, language="en"):
     default_msg = "Consult a local agronomist for detailed guidance."
-    guide_map = CATEGORY_GUIDE
     if language == "ur":
         default_msg = "تفصیلی رہنمائی کے لیے مقامی زرعی ماہر سے مشورہ کریں۔"
-        guide_map = CATEGORY_GUIDE_UR
 
     if genai is None or not api_key:
-        return guide_map.get(category, default_msg)
+        return default_msg
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
-        classes_text = ", ".join([f"{n} ({p*100:.1f}%)" for n, p in top3_classes])
+        model = genai.GenerativeModel('gemini-1.5-flash')
         lang_name = "Urdu" if language == "ur" else "English"
         prompt = (
-            f"You are an agronomy assistant. The image was predicted as '{category}'. "
-            f"Top classes: {classes_text}. Provide a concise summary in {lang_name}: 1) disease overview, 2) key symptoms, 3) immediate actions, 4) low-cost treatment plan, 5) prevention. "
+            f"You are an agronomy assistant. The image was identified as '{category}'. "
+            f"Provide a concise summary in {lang_name}: 1) disease overview, 2) key symptoms, 3) immediate actions, 4) low-cost treatment plan, 5) prevention. "
             f"Write for small farmers. Use clear steps. Avoid brand names. Keep under 1200 characters."
         )
         resp = model.generate_content(prompt)
@@ -605,7 +548,7 @@ def guidance_text(category, top3_classes, api_key, language="en"):
                 return None
         return None
     except Exception as e:
-        return guide_map.get(category, default_msg)
+        return default_msg
 
 
 init_db()
@@ -867,8 +810,14 @@ def predict():
         # Use Gemini for classification
         res = classify_image_with_gemini(content, api_key, language)
         
-        if res is None:
-            return jsonify({"error": "classification_failed"}), 500
+        if res is None or "error" in res:
+            error_details = res.get("error") if res else "Unknown classification error"
+            return jsonify({
+                "error": "classification_failed", 
+                "details": error_details,
+                "is_plant": False,
+                "guidance": f"Error: {error_details}"
+            }), 500
             
         if not res.get("is_plant", True):
             msg = "Not a plant image. Please upload a clear leaf photo."
@@ -944,18 +893,15 @@ def chat():
         req_language = str(data.get("language") or "en").lower()
         
         if genai is None or not api_key:
-            category = data.get("category")
-            guide_map = CATEGORY_GUIDE
             default_msg = "Please ask your local agricultural extension."
             if req_language == "ur":
-                guide_map = CATEGORY_GUIDE_UR
                 default_msg = "براہ کرم اپنے مقامی زرعی توسیعی مرکز سے پوچھیں۔"
             
-            return jsonify({"reply": guide_map.get(category, default_msg)}), 200
+            return jsonify({"reply": default_msg}), 200
         
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
             preface = ""
             category = data.get("category")
@@ -995,7 +941,7 @@ def translate():
             return jsonify({"translated": text}), 200
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             lang = "Urdu" if target == "ur" else "English"
             resp = model.generate_content(f"Translate to {lang}. Only translation:\n\n{text}")
             txt = getattr(resp, 'text', None) or (resp.candidates[0].content.parts[0].text if getattr(resp, 'candidates', None) else None)
