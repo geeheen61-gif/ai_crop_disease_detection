@@ -70,15 +70,9 @@ if HAS_CLOUDINARY:
     except Exception:
         pass
 
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-
 HAS_ML = False
 np = None
 Image = None
-keras = None
 
 try:
     import numpy as np
@@ -91,20 +85,16 @@ except Exception:
     pass
 
 try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+
+try:
     import serial
     from serial.tools import list_ports
 except Exception:
     serial = None
     list_ports = None
-
-try:
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-    import tensorflow
-    keras = tensorflow.keras
-    HAS_ML = True
-except Exception:
-    keras = None
-    HAS_ML = False
 
 MODEL = None
 MODEL_INFO = {}
@@ -526,271 +516,50 @@ CATEGORY_GUIDE_UR = {
     'Healthy': "فاصلہ برقرار رکھیں؛ جڑوں میں پانی دیں؛ ملچنگ کریں؛ ہفتہ وار نگرانی کریں؛ اوزار صاف رکھیں؛ متوازن کھاد دیں۔"
 }
 
-def try_load_class_names():
-    global CLASS_NAMES
-    
-    paths = [
-        os.path.join(BASE_DIR, "disease_class_names.json"),
-        os.path.join(os.getcwd(), "disease_class_names.json"),
-        os.path.join(os.getcwd(), "class_names.json"),
-        os.getenv("MODEL_CLASS_NAMES_JSON", "").strip(),
-    ]
-    
-    for p in paths:
-        if not p or not os.path.exists(p):
-            continue
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                CLASS_NAMES = [str(x) for x in data]
-                return True
-            elif isinstance(data, dict) and "class_names" in data:
-                CLASS_NAMES = [str(x) for x in data["class_names"]]
-                return True
-        except Exception:
-            pass
-    
-    return False
-
-def load_model():
-    global MODEL, MODEL_INFO
-    if MODEL is not None:
-        return MODEL
-    if not HAS_ML or keras is None:
+def classify_image_with_gemini(content, api_key, language="en"):
+    """Uses Gemini Vision API to detect plant disease from image content."""
+    if genai is None or not api_key:
         return None
-    # try server folder JSON + H5
-    try:
-        json_path = os.path.join(BASE_DIR, "model.json")
-        h5_path = os.path.join(BASE_DIR, "model.h5")
-        if os.path.exists(json_path) and os.path.exists(h5_path):
-            with open(json_path, "r", encoding="utf-8") as f:
-                arch = f.read()
-            m = keras.models.model_from_json(arch)
-            m.load_weights(h5_path)
-            MODEL = m
-            MODEL_INFO = {"source": "json+h5", "json": json_path, "weights": h5_path}
-            return MODEL
-    except Exception:
-        pass
-    # try server folder .keras and .h5
-    for p in [
-        os.path.join(BASE_DIR, "model.keras"),
-        os.path.join(BASE_DIR, "disease_model.keras"),
-        os.path.join(BASE_DIR, "model.h5"),
-        os.path.join(BASE_DIR, "disease_model.h5"),
-    ]:
-        if os.path.exists(p):
-            try:
-                MODEL = keras.models.load_model(p, compile=False)
-                MODEL_INFO = {"source": "file", "path": p}
-                return MODEL
-            except Exception:
-                pass
-    env_h5 = os.getenv("MODEL_H5", "").strip()
-    env_keras = os.getenv("MODEL_KERAS", "").strip()
-    env_json = os.getenv("MODEL_JSON", "").strip()
-    env_weights = os.getenv("MODEL_WEIGHTS_H5", "").strip()
-    try:
-        if env_json and env_weights and os.path.exists(env_json) and os.path.exists(env_weights):
-            try:
-                with open(env_json, "r", encoding="utf-8") as f:
-                    arch = f.read()
-                m = keras.models.model_from_json(arch)
-                m.load_weights(env_weights)
-                MODEL = m
-                MODEL_INFO = {"source": "json+h5", "json": env_json, "weights": env_weights}
-                return MODEL
-            except Exception:
-                pass
-        if env_keras and os.path.exists(env_keras):
-            try:
-                MODEL = keras.models.load_model(env_keras, compile=False)
-                MODEL_INFO = {"source": "keras", "path": env_keras}
-                return MODEL
-            except Exception:
-                pass
-        if env_h5 and os.path.exists(env_h5):
-            try:
-                MODEL = keras.models.load_model(env_h5, compile=False)
-                MODEL_INFO = {"source": "h5", "path": env_h5}
-                return MODEL
-            except Exception:
-                pass
-    except Exception:
-        pass
-    candidates = [
-        os.path.join(BASE_DIR, "disease_model.h5"),
-        os.path.join(os.getcwd(), "disease_model.h5"),
-        os.path.join(os.getcwd(), "model.h5"),
-        os.path.join(os.getcwd(), "trained_model.h5"),
-    ]
     
-    for p in candidates:
-        if os.path.exists(p):
-            try:
-                MODEL = keras.models.load_model(p, compile=False)
-                MODEL_INFO = {"source": "h5", "path": p}
-                return MODEL
-            except Exception:
-                pass
-    
-    return None
-
-def category_for(name):
-    n = str(name or "").lower()
-    c = CATEGORY_OF.get(name)
-    if c:
-        return c
-    if "healthy" in n:
-        return "Healthy"
-    if "rust" in n:
-        return "Rust"
-    if "spot" in n:
-        return "Leaf Spot"
-    if "mold" in n:
-        return "Blight"
-    if "blight" in n:
-        return "Blight"
-    if "powdery" in n:
-        return "Blight"
-    if ("huanglongbing" in n) or ("greening" in n):
-        return "Nutrient deficiency"
-    return "Blight"
-
-def assess_plant_like(image):
     try:
-        hsv = image.resize((256, 256)).convert('HSV')
-        if np is not None:
-            arr = np.array(hsv, dtype=np.uint8)
-            H = arr[:,:,0].astype(np.float32) * (360.0/255.0)
-            S = arr[:,:,1].astype(np.float32) / 255.0
-            V = arr[:,:,2].astype(np.float32) / 255.0
-            green = ((H>=35)&(H<=85)&(S>0.20)&(V>0.20)).mean()
-            yellow = ((H>=20)&(H<=35)&(S>0.25)&(V>0.25)).mean()
-            brown = (((H>=10)&(H<=30))&(S>0.20)&(V<0.45)).mean()
-            sky = (((H>=180)&(H<=260))&(S<0.25)&(V>0.60)).mean()
-        else:
-            data = list(hsv.getdata())
-            total = len(data) or 1
-            g = y = b = s = 0
-            for h,sat,val in data:
-                hdeg = (h*360.0)/255.0
-                S = sat/255.0
-                V = val/255.0
-                if (35<=hdeg<=85) and (S>0.20) and (V>0.20):
-                    g += 1
-                if (20<=hdeg<=35) and (S>0.25) and (V>0.25):
-                    y += 1
-                if (10<=hdeg<=30) and (S>0.20) and (V<0.45):
-                    b += 1
-                if (180<=hdeg<=260) and (S<0.25) and (V>0.60):
-                    s += 1
-            green = g/total
-            yellow = y/total
-            brown = b/total
-            sky = s/total
-        plant_score = float(green*0.6 + yellow*0.25 - sky*0.2 - brown*0.15)
-        return max(0.0, plant_score)
-    except Exception:
-        return 0.5
-
-def classify_image(file_like):
-    try:
-        image = Image.open(file_like).convert("RGB")
-    except Exception:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash') # Using 1.5 flash for vision
+        
+        # Prepare the image for Gemini
+        image_parts = [
+            {
+                "mime_type": "image/jpeg",
+                "data": content
+            }
+        ]
+        
+        lang_name = "Urdu" if language == "ur" else "English"
+        prompt = (
+            f"Act as an expert agronomist. Analyze this plant leaf image and provide a JSON response with the following fields: "
+            f"1) 'is_plant' (boolean): whether the image is a plant leaf, "
+            f"2) 'disease_name' (string): the specific disease or 'Healthy', "
+            f"3) 'category' (string): one of 'Leaf Spot', 'Blight', 'Rust', 'Nutrient deficiency', 'Healthy', "
+            f"4) 'confidence' (float): 0 to 1, "
+            f"5) 'guidance' (string): a concise summary in {lang_name} covering symptoms, treatment, and prevention. "
+            f"Provide ONLY the raw JSON object."
+        )
+        
+        response = model.generate_content([prompt, image_parts[0]])
+        
+        # Extract JSON from response
+        text = response.text.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+            
+        data = json.loads(text)
+        return data
+    except Exception as e:
+        print(f"Gemini detection error: {e}")
         return None
-    # Try ML if available
-    if HAS_ML and keras is not None and np is not None and len(CLASS_NAMES) > 0:
-        model = load_model()
-        if model is not None:
-            try:
-                img128 = image.resize((128, 128))
-                raw = np.array(img128, dtype=np.float32)
-                norm = raw / 255.0
-                arr_raw = np.expand_dims(raw, axis=0)
-                arr_norm = np.expand_dims(norm, axis=0)
-                def infer(x):
-                    try:
-                        return model.predict(x, verbose=0)[0]
-                    except TypeError:
-                        return model.predict(x)[0]
-                probs_norm = infer(arr_norm)
-                probs_raw = infer(arr_raw)
-                probs = probs_norm if float(np.max(probs_norm)) >= float(np.max(probs_raw)) else probs_raw
-                top_idx = int(np.argsort(probs)[::-1][0])
-                top3_idx = np.argsort(probs)[::-1][:3]
-                top3 = [(CLASS_NAMES[i], float(probs[i])) for i in top3_idx]
-                cats = ['Leaf Spot', 'Blight', 'Rust', 'Nutrient deficiency', 'Healthy']
-                cat_probs = {c: 0.0 for c in cats}
-                for i, p in enumerate(probs):
-                    if i < len(CLASS_NAMES):
-                        c = category_for(CLASS_NAMES[i])
-                        if c in cat_probs:
-                            cat_probs[c] += float(p)
-                cat_items = [(c, cat_probs[c]) for c in cats]
-                cat_items.sort(key=lambda x: x[1], reverse=True)
-                return top_idx, top3, cat_items[0][0], cat_items[:3]
-            except Exception:
-                pass
-    # Heuristic fallback (works without ML)
-    try:
-        hsv = image.resize((256, 256)).convert('HSV')
-        if np is not None:
-            arr = np.array(hsv, dtype=np.uint8)
-            H = arr[:,:,0].astype(np.float32) * (360.0/255.0)
-            S = arr[:,:,1].astype(np.float32) / 255.0
-            V = arr[:,:,2].astype(np.float32) / 255.0
-            green = ((H>=35)&(H<=85)&(S>0.2)).mean()
-            yellow = ((H>=20)&(H<=35)&(S>0.25)).mean()
-            rusty = (((H>=0)&(H<=20))&(S>0.35)&(V>0.35)).mean()
-            dark = (V<0.25).mean()
-        else:
-            data = list(hsv.getdata())
-            total = len(data) or 1
-            g=y=ru=d=0
-            for h,sat,val in data:
-                hdeg = (h*360.0)/255.0
-                S = sat/255.0
-                V = val/255.0
-                if (35<=hdeg<=85) and (S>0.2):
-                    g+=1
-                if (20<=hdeg<=35) and (S>0.25):
-                    y+=1
-                if (0<=hdeg<=20) and (S>0.35) and (V>0.35):
-                    ru+=1
-                if V<0.25:
-                    d+=1
-            green = g/total
-            yellow = y/total
-            rusty = ru/total
-            dark = d/total
-        cats = ['Leaf Spot','Blight','Rust','Nutrient deficiency','Healthy']
-        scores = {
-            'Healthy': max(0.0, green - (yellow+rusty+dark)/2),
-            'Rust': rusty,
-            'Nutrient deficiency': max(0.0, yellow - rusty/2),
-            'Leaf Spot': max(0.0, dark - yellow/3),
-            'Blight': max(0.0, 1.0 - green - 0.5*yellow - 0.3*rusty),
-        }
-        items = sorted([(k, float(v)) for k, v in scores.items()], key=lambda x: x[1], reverse=True)
-        total = sum(v for _, v in items) or 1.0
-        items = [(k, v/total) for k, v in items]
-        cat_top = items[0][0]
-        cat_top3 = items[:3]
-        if cat_top == 'Rust':
-            top3 = [('Corn___Common_rust', items[0][1]), ('Cherry___Powdery_mildew', items[1][1]), ('Apple___Cedar_apple_rust', items[2][1])]
-        elif cat_top == 'Leaf Spot':
-            top3 = [('Tomato___Septoria_leaf_spot', items[0][1]), ('Apple___Apple_scab', items[1][1]), ('Grape___Leaf_blight_(Isariopsis_Leaf_Spot)', items[2][1])]
-        elif cat_top == 'Nutrient deficiency':
-            top3 = [('Orange___Haunglongbing_(Citrus_greening)', items[0][1]), ('Tomato___Tomato_Yellow_Leaf_Curl_Virus', items[1][1]), ('Potato___healthy', items[2][1])]
-        elif cat_top == 'Healthy':
-            top3 = [('Tomato___healthy', items[0][1]), ('Grape___healthy', items[1][1]), ('Pepper,_bell___healthy', items[2][1])]
-        else:
-            top3 = [('Tomato___Early_blight', items[0][1]), ('Potato___Early_blight', items[1][1]), ('Corn___Northern_Leaf_Blight', items[2][1])]
-        return 0, top3, cat_top, cat_top3
-    except Exception:
-        return None
+
+# Custom classification code removed in favor of Gemini API as per request.
 
 def default_gemini_key():
     k = os.getenv("GEMINI_API_KEY")
@@ -1017,12 +786,7 @@ def sensors_register():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "message": "Plant Disease Detection API",
-        "status": "online",
-        "ml_enabled": HAS_ML,
-        "model_loaded": MODEL is not None
-    })
+    return send_from_directory('static', 'index.html')
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -1075,12 +839,9 @@ def predict():
         form_data = request.form or {}
         
         api_key = form_data.get("gemini_api_key") or json_data.get("gemini_api_key") or default_gemini_key()
-        include_guidance = form_data.get("include_guidance") or json_data.get("include_guidance")
-        include_guidance = str(include_guidance or "").lower() in {"1", "true", "yes"}
         language = str(form_data.get("language") or json_data.get("language") or "en").lower()
         
         content = None
-        
         file = request.files.get("file")
         image_url = form_data.get("image_url") or json_data.get("image_url")
 
@@ -1094,127 +855,65 @@ def predict():
                 return jsonify({"error": "file_read_failed"}), 400
         elif image_url:
             try:
-                print(f"Fetching image from: {image_url}")
                 r = requests.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
                 r.raise_for_status()
                 content = r.content
             except Exception as e:
-                print(f"Fetch failed: {e}")
                 return jsonify({"error": "image_url_fetch_failed", "details": str(e)}), 400
         
         if not content:
             return jsonify({"error": "no_content"}), 400
         
-        buf = io.BytesIO(content)
-        
-        if Image is not None:
-            try:
-                image = Image.open(buf).convert('RGB')
-                plant_score = assess_plant_like(image)
-                
-                if plant_score < 0.15:
-                    msg = "Not a plant image. Please upload a clear leaf photo."
-                    if language == "ur":
-                        msg = "یہ پودے کی تصویر نہیں ہے۔ براہ کرم پتے کی صاف تصویر اپ لوڈ کریں۔"
-                    return jsonify({
-                        "is_plant": False,
-                        "plant_score": plant_score,
-                        "message": msg
-                    }), 200
-            except Exception:
-                pass
-        
-        buf.seek(0)
-        res = classify_image(buf)
-        
-        # If local classification fails, try remote
-        if res is None:
-            remote = os.getenv("REMOTE_PREDICT_URL", "").strip()
-            if remote:
-                try:
-                    print(f"DEBUG: Trying remote prediction at {remote}")
-                    files = {"file": ("image.jpg", content, "image/jpeg")}
-                    rr = requests.post(remote, files=files, timeout=10)
-                    if rr.status_code == 200:
-                        remote_res = rr.json()
-                        # Capture values from remote response for storage
-                        cat_top = remote_res.get("category_top") or remote_res.get("disease") or "Unknown"
-                        conf = float(remote_res.get("confidence") or 0.0)
-                        guide = remote_res.get("guidance") or ""
-                        
-                        # Store and return
-                        store_prediction(image_url or "", cat_top, conf, guide)
-                        return jsonify(remote_res)
-                except Exception as e:
-                    print(f"DEBUG: Remote prediction failed: {e}")
+        # Use Gemini for classification
+        res = classify_image_with_gemini(content, api_key, language)
         
         if res is None:
             return jsonify({"error": "classification_failed"}), 500
-        
-        top1, top3, cat_top, cat_top3 = res
-        conf = 0.0
-        try:
-            conf = float(max(p for _, p in top3))
-        except Exception:
-            conf = 0.0
-        
-        try:
-            healthy_prob = 0.0
-            for n, p in cat_top3:
-                if n == 'Healthy':
-                    healthy_prob = float(p)
-                    break
-            has_healthy_class = any(('healthy' in (n or '').lower()) for n, _ in top3)
-            if (cat_top != 'Healthy') and (has_healthy_class or healthy_prob >= 0.5 or conf < 0.25):
-                cat_top = 'Healthy'
-                cat_top3 = [('Healthy', max(healthy_prob, 0.8)), ('Leaf Spot', 0.1), ('Blight', 0.1)]
-                top3 = [(t[0], 0.65 if 'healthy' in t[0].lower() else (0.2 if len(top3) > 1 else 0.15)) for t in top3[:1]] + [(t[0], (0.2 if len(top3) > 1 else 0.15)) for t in top3[1:]]
-        except Exception:
-            pass
-        
-        # Guidance generation
-        guide = None
-        if include_guidance:
-            guide = guidance_text(cat_top, top3, api_key, language)
-        
+            
+        if not res.get("is_plant", True):
+            msg = "Not a plant image. Please upload a clear leaf photo."
+            if language == "ur":
+                msg = "یہ پودے کی تصویر نہیں ہے۔ براہ کرم پتے کی صاف تصویر اپ لوڈ کریں۔"
+            return jsonify({
+                "is_plant": False,
+                "message": res.get("guidance") or msg
+            }), 200
+
+        cat_top = res.get("category", "Healthy")
+        conf = float(res.get("confidence", 0.9))
+        disease_name = res.get("disease_name", cat_top)
+        guide = res.get("guidance", "")
+
         # If we have a file but no image_url, try to upload to Cloudinary so history works
         if not image_url and HAS_CLOUDINARY and content:
             try:
-                # Save to temp file
                 temp_filename = f"pred_{int(time.time())}_{os.urandom(4).hex()}.jpg"
                 temp_path = os.path.join(UPLOAD_FOLDER, temp_filename)
                 with open(temp_path, "wb") as f:
                     f.write(content)
-                
-                # Upload
                 c_url, c_err = upload_to_cloudinary(temp_path)
                 if c_url:
                     image_url = c_url
-                    print(f"DEBUG: Uploaded prediction image to {image_url}")
-                
-                # Cleanup
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"DEBUG: Failed to upload prediction image: {e}")
+                try: os.remove(temp_path)
+                except: pass
+            except Exception:
+                pass
 
         # Always store the prediction for history
         try:
-            store_prediction(image_url or "", cat_top, conf, guide or "")
+            store_prediction(image_url or "", disease_name, conf, guide)
         except Exception as e:
             print(f"Failed to store prediction: {e}")
         
         return jsonify({
             "is_plant": True,
             "confidence": conf,
-            "top_class_index": top1,
-            "top_classes": [{"name": n, "prob": p} for n, p in top3],
+            "top_class_index": 0,
+            "top_classes": [{"name": disease_name, "prob": conf}],
             "category_top": cat_top,
-            "categories_top3": [{"name": n, "prob": p} for n, p in cat_top3],
+            "categories_top3": [{"name": cat_top, "prob": conf}],
             "guidance": guide,
-            "image_url": image_url # Return the URL if we generated one
+            "image_url": image_url
         })
     except Exception as e:
         print(f"Predict error: {e}")
